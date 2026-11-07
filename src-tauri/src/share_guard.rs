@@ -635,7 +635,7 @@ mod tests {
     #[test]
     fn the_check_host_and_its_sentinel() {
         assert!(is_check_target("dopamine.check"));
-        assert!(is_check_target("AETHER.CHECK."));
+        assert!(is_check_target("DOPAMINE.CHECK."));
         assert!(is_check_target("198.51.100.254"));
         assert!(!is_check_target("dopamine.check.example"));
     }
