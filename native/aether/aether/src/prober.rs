@@ -1,0 +1,1668 @@
+use std::collections::HashSet;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use futures::stream::StreamExt;
+use rand::RngExt;
+
+use crate::error::{AetherError, Result};
+use crate::noize::NoizeConfig;
+use crate::quic;
+
+pub const MASQUE_DOCUMENTED_CIDRS_V4: &[&str] = &["162.159.197.0/24", "162.159.198.0/24"];
+
+pub const MASQUE_DOH_CIDRS_V4: &[&str] = &["162.159.36.0/24", "162.159.46.0/24"];
+
+pub const MASQUE_CIDRS_V4: &[&str] = &[
+    "162.159.196.0/24",
+    "162.159.195.0/24",
+    "162.159.192.0/24",
+    "162.159.193.0/24",
+    "162.159.204.0/24",
+    "162.159.197.0/24",
+    "162.159.198.0/24",
+    // Where Cloudflare serves MASQUE to WARP+, as 162.159.198.0/24 to WARP and
+    // 162.159.197.0/24 to Zero Trust.
+    "162.159.199.0/24",
+    "172.65.251.0/24",
+    "188.114.96.0/24",
+    "188.114.97.0/24",
+    "188.114.98.0/24",
+    "188.114.99.0/24",
+    "162.159.36.0/24",
+    "162.159.46.0/24",
+];
+
+pub const MASQUE_SEEDS: &[&str] = &[
+    "162.159.196.1",
+    "162.159.195.1",
+    "162.159.192.1",
+    "162.159.197.3",
+    "162.159.197.1",
+    "162.159.198.2",
+    "162.159.198.1",
+    "162.159.193.1",
+    // The MASQUE gateways of WARP+ and of Zero Trust, as 162.159.198.2 is WARP's.
+    "162.159.199.2",
+    "162.159.197.2",
+];
+
+/// The addresses the IPv4 scan tries without a team, each on every MASQUE port: those of
+/// 162.159.198.0/24 and then those of 162.159.199.0/24 that completed a TCP handshake on port
+/// 443, 75 and 222 of their 256, each range fastest first as measured. With a team, the scan
+/// tries `MASQUE_SEEDS` and sweeps the ranges instead.
+pub const MASQUE_GATEWAYS_V4: &[&str] = &[
+    "162.159.198.183",
+    "162.159.198.206",
+    "162.159.198.226",
+    "162.159.198.125",
+    "162.159.198.72",
+    "162.159.198.89",
+    "162.159.198.198",
+    "162.159.198.131",
+    "162.159.198.245",
+    "162.159.198.114",
+    "162.159.198.31",
+    "162.159.198.60",
+    "162.159.198.4",
+    "162.159.198.65",
+    "162.159.198.33",
+    "162.159.198.86",
+    "162.159.198.244",
+    "162.159.198.123",
+    "162.159.198.233",
+    "162.159.198.69",
+    "162.159.198.255",
+    "162.159.198.176",
+    "162.159.198.186",
+    "162.159.198.63",
+    "162.159.198.37",
+    "162.159.198.169",
+    "162.159.198.147",
+    "162.159.198.120",
+    "162.159.198.135",
+    "162.159.198.54",
+    "162.159.198.234",
+    "162.159.198.109",
+    "162.159.198.175",
+    "162.159.198.231",
+    "162.159.198.219",
+    "162.159.198.216",
+    "162.159.198.64",
+    "162.159.198.250",
+    "162.159.198.184",
+    "162.159.198.74",
+    "162.159.198.241",
+    "162.159.198.213",
+    "162.159.198.232",
+    "162.159.198.75",
+    "162.159.198.77",
+    "162.159.198.172",
+    "162.159.198.145",
+    "162.159.198.36",
+    "162.159.198.124",
+    "162.159.198.80",
+    "162.159.198.192",
+    "162.159.198.82",
+    "162.159.198.137",
+    "162.159.198.141",
+    "162.159.198.48",
+    "162.159.198.71",
+    "162.159.198.227",
+    "162.159.198.207",
+    "162.159.198.49",
+    "162.159.198.178",
+    "162.159.198.197",
+    "162.159.198.203",
+    "162.159.198.204",
+    "162.159.198.205",
+    "162.159.198.195",
+    "162.159.198.230",
+    "162.159.198.202",
+    "162.159.198.53",
+    "162.159.198.79",
+    "162.159.198.58",
+    "162.159.198.35",
+    "162.159.198.239",
+    "162.159.198.116",
+    "162.159.198.127",
+    "162.159.198.240",
+    "162.159.199.87",
+    "162.159.199.117",
+    "162.159.199.48",
+    "162.159.199.217",
+    "162.159.199.65",
+    "162.159.199.198",
+    "162.159.199.47",
+    "162.159.199.103",
+    "162.159.199.133",
+    "162.159.199.151",
+    "162.159.199.195",
+    "162.159.199.73",
+    "162.159.199.156",
+    "162.159.199.247",
+    "162.159.199.127",
+    "162.159.199.158",
+    "162.159.199.208",
+    "162.159.199.82",
+    "162.159.199.213",
+    "162.159.199.70",
+    "162.159.199.243",
+    "162.159.199.204",
+    "162.159.199.154",
+    "162.159.199.240",
+    "162.159.199.236",
+    "162.159.199.126",
+    "162.159.199.186",
+    "162.159.199.188",
+    "162.159.199.187",
+    "162.159.199.124",
+    "162.159.199.43",
+    "162.159.199.102",
+    "162.159.199.60",
+    "162.159.199.219",
+    "162.159.199.163",
+    "162.159.199.193",
+    "162.159.199.135",
+    "162.159.199.110",
+    "162.159.199.94",
+    "162.159.199.136",
+    "162.159.199.233",
+    "162.159.199.77",
+    "162.159.199.241",
+    "162.159.199.223",
+    "162.159.199.120",
+    "162.159.199.38",
+    "162.159.199.75",
+    "162.159.199.57",
+    "162.159.199.118",
+    "162.159.199.50",
+    "162.159.199.76",
+    "162.159.199.58",
+    "162.159.199.145",
+    "162.159.199.81",
+    "162.159.199.54",
+    "162.159.199.234",
+    "162.159.199.157",
+    "162.159.199.121",
+    "162.159.199.246",
+    "162.159.199.182",
+    "162.159.199.1",
+    "162.159.199.251",
+    "162.159.199.35",
+    "162.159.199.179",
+    "162.159.199.147",
+    "162.159.199.137",
+    "162.159.199.49",
+    "162.159.199.138",
+    "162.159.199.116",
+    "162.159.199.172",
+    "162.159.199.42",
+    "162.159.199.160",
+    "162.159.199.88",
+    "162.159.199.212",
+    "162.159.199.174",
+    "162.159.199.79",
+    "162.159.199.105",
+    "162.159.199.130",
+    "162.159.199.252",
+    "162.159.199.238",
+    "162.159.199.248",
+    "162.159.199.125",
+    "162.159.199.62",
+    "162.159.199.34",
+    "162.159.199.239",
+    "162.159.199.84",
+    "162.159.199.104",
+    "162.159.199.196",
+    "162.159.199.72",
+    "162.159.199.97",
+    "162.159.199.74",
+    "162.159.199.229",
+    "162.159.199.159",
+    "162.159.199.192",
+    "162.159.199.201",
+    "162.159.199.44",
+    "162.159.199.222",
+    "162.159.199.142",
+    "162.159.199.78",
+    "162.159.199.235",
+    "162.159.199.168",
+    "162.159.199.162",
+    "162.159.199.39",
+    "162.159.199.209",
+    "162.159.199.111",
+    "162.159.199.139",
+    "162.159.199.113",
+    "162.159.199.215",
+    "162.159.199.245",
+    "162.159.199.86",
+    "162.159.199.46",
+    "162.159.199.180",
+    "162.159.199.66",
+    "162.159.199.173",
+    "162.159.199.53",
+    "162.159.199.216",
+    "162.159.199.237",
+    "162.159.199.114",
+    "162.159.199.109",
+    "162.159.199.214",
+    "162.159.199.190",
+    "162.159.199.106",
+    "162.159.199.100",
+    "162.159.199.92",
+    "162.159.199.96",
+    "162.159.199.61",
+    "162.159.199.108",
+    "162.159.199.64",
+    "162.159.199.101",
+    "162.159.199.140",
+    "162.159.199.123",
+    "162.159.199.112",
+    "162.159.199.199",
+    "162.159.199.225",
+    "162.159.199.83",
+    "162.159.199.69",
+    "162.159.199.90",
+    "162.159.199.153",
+    "162.159.199.115",
+    "162.159.199.149",
+    "162.159.199.36",
+    "162.159.199.224",
+    "162.159.199.155",
+    "162.159.199.37",
+    "162.159.199.52",
+    "162.159.199.63",
+    "162.159.199.164",
+    "162.159.199.253",
+    "162.159.199.141",
+    "162.159.199.242",
+    "162.159.199.89",
+    "162.159.199.67",
+    "162.159.199.185",
+    "162.159.199.98",
+    "162.159.199.167",
+    "162.159.199.0",
+    "162.159.199.176",
+    "162.159.199.189",
+    "162.159.199.218",
+    "162.159.199.211",
+    "162.159.199.221",
+    "162.159.199.220",
+    "162.159.199.231",
+    "162.159.199.230",
+    "162.159.199.206",
+    "162.159.199.175",
+    "162.159.199.184",
+    "162.159.199.203",
+    "162.159.199.255",
+    "162.159.199.171",
+    "162.159.199.45",
+    "162.159.199.228",
+    "162.159.199.177",
+    "162.159.199.165",
+    "162.159.199.122",
+    "162.159.199.99",
+    "162.159.199.183",
+    "162.159.199.161",
+    "162.159.199.144",
+    "162.159.199.119",
+    "162.159.199.128",
+    "162.159.199.146",
+    "162.159.199.148",
+    "162.159.199.68",
+    "162.159.199.56",
+    "162.159.199.95",
+    "162.159.199.55",
+    "162.159.199.197",
+    "162.159.199.41",
+    "162.159.199.194",
+    "162.159.199.226",
+    "162.159.199.134",
+    "162.159.199.249",
+    "162.159.199.232",
+    "162.159.199.227",
+    "162.159.199.191",
+    "162.159.199.150",
+    "162.159.199.170",
+    "162.159.199.202",
+    "162.159.199.169",
+    "162.159.199.207",
+    "162.159.199.166",
+    "162.159.199.250",
+    "162.159.199.210",
+    "162.159.199.181",
+    "162.159.199.132",
+    "162.159.199.129",
+    "162.159.199.107",
+    "162.159.199.71",
+    "162.159.199.152",
+    "162.159.199.91",
+    "162.159.199.131",
+    "162.159.199.205",
+    "162.159.199.85",
+    "162.159.199.59",
+    "162.159.199.51",
+    "162.159.199.143",
+    "162.159.199.244",
+    "162.159.199.254",
+    "162.159.199.178",
+    "162.159.199.200",
+    "162.159.199.93",
+];
+
+pub const MASQUE_VERIFIED_GATEWAYS: &[&str] = &[
+    "162.159.199.1",
+    "162.159.199.2",
+    "162.159.198.2",
+    "162.159.198.1",
+];
+
+pub const MASQUE_ALT_PORTS: &[u16] = &[1701, 8095, 500, 4500];
+
+pub const MASQUE_PORTS: &[u16] = &[443, 500, 1701, 4500, 4443, 8443, 8095];
+
+pub const MASQUE_CIDRS_V6: &[&str] = &[
+    "2606:4700:d0::/48",
+    "2606:4700:102::/48",
+    "2606:4700:d1::/48",
+    // WARP's MASQUE over IPv6, where the WARP client's own gateway is 2606:4700:103::1.
+    "2606:4700:103::/48",
+];
+
+pub const MASQUE_ZT_CIDRS_V4: &[&str] = &["162.159.197.0/24"];
+
+pub const MASQUE_ZT_CIDRS_V6: &[&str] = &["2606:4700:102::/48"];
+
+pub fn zero_trust_mode() -> bool {
+    std::env::var("AETHER_TEAM")
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false)
+}
+
+pub fn prioritize(all: &[&'static str], first: &[&'static str]) -> Vec<&'static str> {
+    if !zero_trust_mode() {
+        return all.to_vec();
+    }
+
+    let mut out: Vec<&'static str> = Vec::with_capacity(all.len());
+    for entry in first {
+        if all.contains(entry) {
+            out.push(entry);
+        }
+    }
+    for entry in all {
+        if !out.contains(entry) {
+            out.push(entry);
+        }
+    }
+    out
+}
+
+pub fn masque_cidrs_v4() -> Vec<&'static str> {
+    prioritize(MASQUE_CIDRS_V4, MASQUE_ZT_CIDRS_V4)
+}
+
+pub fn masque_cidrs_v6() -> Vec<&'static str> {
+    prioritize(MASQUE_CIDRS_V6, MASQUE_ZT_CIDRS_V6)
+}
+
+/// The IPv6 gateways tried first. The scan's other IPv6 addresses carry an IPv4 address of the
+/// ranges in their last 32 bits, so 2606:4700:103::1, the WARP client's own MASQUE gateway,
+/// is here or nowhere.
+pub const MASQUE_SEEDS_V6: &[&str] = &[
+    "2606:4700:103::1",
+    "2606:4700:d0::a29f:c602",
+    "2606:4700:d1::a29f:c602",
+    "2606:4700:d0::a29f:c601",
+    "2606:4700:d0::a29f:c001",
+];
+
+/// The IPv6 gateway the scan tries first without a team, on every MASQUE port: WARP's own, the
+/// one of `MASQUE_SEEDS_V6` in `MASQUE_WARP_CIDRS_V6`.
+pub const MASQUE_GATEWAYS_V6: &[&str] = &["2606:4700:103::1"];
+
+/// The IPv6 range the scan samples without a team: regular WARP's MASQUE connects on
+/// 2606:4700:103::/48 and on no other range of `MASQUE_CIDRS_V6`. With a team, the scan tries
+/// `MASQUE_SEEDS_V6` and samples every range instead.
+pub const MASQUE_WARP_CIDRS_V6: &[&str] = &["2606:4700:103::/48"];
+
+#[derive(Debug, Clone, Copy)]
+pub struct ProbeResult {
+    pub ip: IpAddr,
+    pub port: u16,
+    pub rtt: Duration,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IpScan {
+    V4,
+    V6,
+    Both,
+}
+
+impl IpScan {
+    pub fn parse(s: &str) -> IpScan {
+        match s.trim().to_lowercase().as_str() {
+            "6" | "v6" | "ipv6" => IpScan::V6,
+            "both" | "all" | "dual" => IpScan::Both,
+            _ => IpScan::V4,
+        }
+    }
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            IpScan::V4 => "ipv4",
+            IpScan::V6 => "ipv6",
+            IpScan::Both => "dual-stack",
+        }
+    }
+
+    pub fn want_v4(&self) -> bool {
+        matches!(self, IpScan::V4 | IpScan::Both)
+    }
+
+    pub fn want_v6(&self) -> bool {
+        matches!(self, IpScan::V6 | IpScan::Both)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScanMode {
+    Turbo,
+    Balanced,
+    Thorough,
+    Verified,
+    Ironclad,
+}
+
+impl ScanMode {
+    pub fn parse(s: &str) -> ScanMode {
+        match s.trim().to_lowercase().as_str() {
+            "turbo" | "fast" => ScanMode::Turbo,
+            "thorough" | "deep" | "pro" => ScanMode::Thorough,
+            "verified" | "proven" | "stealth" | "quiet" => ScanMode::Verified,
+            "ironclad" | "real" | "verify" | "guaranteed" => ScanMode::Ironclad,
+            _ => ScanMode::Balanced,
+        }
+    }
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            ScanMode::Turbo => "turbo",
+            ScanMode::Balanced => "balanced",
+            ScanMode::Thorough => "thorough",
+            ScanMode::Verified => "verified",
+            ScanMode::Ironclad => "ironclad",
+        }
+    }
+
+    fn strategy(&self) -> Strategy {
+        match self {
+            ScanMode::Turbo => Strategy {
+                concurrency: 20,
+                per_probe_timeout: Duration::from_millis(6000),
+                overall_deadline: Duration::from_secs(45),
+                quiet_after_first: Duration::from_secs(0),
+                target_successes: 1,
+                early_exit_first: true,
+                full_subnet: false,
+                sample_per_cidr: 64,
+            },
+            ScanMode::Balanced => Strategy {
+                concurrency: 16,
+                per_probe_timeout: Duration::from_millis(6000),
+                overall_deadline: Duration::from_secs(120),
+                quiet_after_first: Duration::from_secs(20),
+                target_successes: 6,
+                early_exit_first: false,
+                full_subnet: false,
+                sample_per_cidr: 140,
+            },
+            ScanMode::Thorough => Strategy {
+                concurrency: 20,
+                per_probe_timeout: Duration::from_millis(10000),
+                overall_deadline: Duration::from_secs(300),
+                quiet_after_first: Duration::from_secs(30),
+                target_successes: 0,
+                early_exit_first: false,
+                full_subnet: true,
+                sample_per_cidr: 0,
+            },
+            ScanMode::Verified => Strategy {
+                concurrency: 16,
+                per_probe_timeout: Duration::from_millis(5000),
+                overall_deadline: Duration::from_secs(60),
+                quiet_after_first: Duration::from_secs(8),
+                target_successes: 4,
+                early_exit_first: false,
+                full_subnet: false,
+                sample_per_cidr: 48,
+            },
+            ScanMode::Ironclad => Strategy {
+                concurrency: 4,
+                per_probe_timeout: Duration::from_millis(15000),
+                overall_deadline: Duration::from_secs(180),
+                quiet_after_first: Duration::from_secs(15),
+                target_successes: 3,
+                early_exit_first: false,
+                full_subnet: false,
+                sample_per_cidr: 140,
+            },
+        }
+    }
+}
+
+// >>> AETHER-APP-PATCH custom-tcp-scan
+// Only app-selected Config -> Aether uses this policy; ordinary/Tor scans
+// retain their existing strategy. Each remote probe pays SOCKS + TLS + H2 +
+// CONNECT-IP data-plane verification, not a direct 6-second QUIC handshake.
+fn tune_custom_tcp_scan(st: &mut Strategy, custom_tcp: bool) {
+    if !custom_tcp { return; }
+    st.concurrency = st.concurrency.min(4);
+    st.per_probe_timeout = st.per_probe_timeout.max(Duration::from_secs(20));
+    st.quiet_after_first = Duration::ZERO;
+    st.target_successes = 1;
+    st.early_exit_first = true;
+}
+// <<< AETHER-APP-PATCH custom-tcp-scan
+
+const IRONCLAD_TCPING_TIMEOUT: Duration = Duration::from_secs(10);
+
+struct Strategy {
+    concurrency: usize,
+    per_probe_timeout: Duration,
+    overall_deadline: Duration,
+    quiet_after_first: Duration,
+    target_successes: usize,
+    early_exit_first: bool,
+    full_subnet: bool,
+    sample_per_cidr: usize,
+}
+
+#[derive(Clone)]
+pub struct MasqueProbe {
+    pub sni: String,
+    pub authority: String,
+    pub path: String,
+    pub cert_pem: Arc<[u8]>,
+    pub key_pem: Arc<[u8]>,
+    pub ech_config_list: Option<Arc<[u8]>>,
+    pub noize: NoizeConfig,
+    pub ports: Vec<u16>,
+    pub ip: IpScan,
+    pub local_ipv4: Ipv4Addr,
+}
+
+pub async fn host_has_ipv6() -> bool {
+    match crate::egress::udp_bind("[::]:0".parse().expect("a wildcard address")) {
+        Ok(sock) => sock.connect("[2606:4700:d0::a29f:c001]:443").await.is_ok(),
+        Err(_) => false,
+    }
+}
+
+pub async fn hunt_best_gateway(probe: &MasqueProbe, mode: ScanMode) -> Result<ProbeResult> {
+    hunt_best_gateway_avoiding(probe, mode, &HashSet::new()).await
+}
+
+/// `hunt_best_gateway`, leaving out the addresses in `avoid` on every port: gateways a run gave
+/// up on for a while.
+pub async fn hunt_best_gateway_avoiding(
+    probe: &MasqueProbe,
+    mode: ScanMode,
+    avoid: &HashSet<IpAddr>,
+) -> Result<ProbeResult> {
+    let mut st = mode.strategy();
+    // >>> AETHER-APP-PATCH custom-tcp-scan-apply
+    let custom_tcp = crate::masque_h2::enabled()
+        && std::env::var("AETHER_CUSTOM_TCP_UPSTREAM").as_deref() == Ok("1")
+        && crate::upstream::configured().is_some();
+    tune_custom_tcp_scan(&mut st, custom_tcp);
+    if custom_tcp {
+        log::info!("[+] custom TCP scan: bounded fan-out, 20s per remote data-plane probe, commit first verified gateway");
+    }
+    // <<< AETHER-APP-PATCH custom-tcp-scan-apply
+    st.concurrency = crate::sysprofile::cap_concurrency(st.concurrency);
+    let timeout = st.per_probe_timeout;
+    let mut effective_ip = probe.ip;
+    if probe.ip.want_v6() && !host_has_ipv6().await {
+        if probe.ip.want_v4() {
+            log::warn!("[-] host has no IPv6 route; falling back to IPv4-only scan");
+            effective_ip = IpScan::V4;
+        } else {
+            log::warn!("[-] host has no IPv6 route; IPv6 scan needs native IPv6 connectivity");
+            return Err(AetherError::NoCleanEndpoint);
+        }
+    }
+    let candidates = leave_out(
+        build_candidates(&st, &probe.ports, effective_ip, zero_trust_mode()),
+        avoid,
+    );
+    if !avoid.is_empty() {
+        log::info!(
+            "[*] leaving {} gateway(s) out of this scan for now",
+            avoid.len()
+        );
+    }
+
+    log::info!(
+        "[*] scan mode={} ip={} candidates={} ports={:?} concurrency={} per_probe={:?} budget={:?}",
+        mode.label(),
+        effective_ip.label(),
+        candidates.len(),
+        probe.ports,
+        st.concurrency,
+        st.per_probe_timeout,
+        st.overall_deadline,
+    );
+
+    let ironclad = mode == ScanMode::Ironclad;
+
+    let stream = futures::stream::iter(
+        candidates
+            .into_iter()
+            .map(|(ip, port)| verify_one(probe, ip, port, timeout, ironclad)),
+    )
+    .buffer_unordered(st.concurrency);
+    tokio::pin!(stream);
+
+    let deadline = Instant::now() + st.overall_deadline;
+    let mut best: Option<ProbeResult> = None;
+    let mut found = 0usize;
+    let mut quiet_until: Option<Instant> = None;
+
+    loop {
+        let effective = match quiet_until {
+            Some(q) => q.min(deadline),
+            None => deadline,
+        };
+        let remaining = effective.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            if best.is_some() {
+                if quiet_until.is_some() {
+                    log::info!("[+] no new gateways recently, finalizing selection");
+                } else {
+                    log::warn!("[-] scan deadline reached");
+                }
+            } else {
+                log::warn!("[-] scan deadline reached with no gateway");
+            }
+            break;
+        }
+
+        tokio::select! {
+            item = stream.next() => {
+                match item {
+                    None => break,
+                    Some(None) => continue,
+                    Some(Some(pr)) => {
+                        log::info!("[+] candidate ok {}:{} rtt={:?}", pr.ip, pr.port, pr.rtt);
+                        if st.early_exit_first {
+                            return Ok(pr);
+                        }
+                        best = Some(match best {
+                            Some(cur) if cur.rtt <= pr.rtt => cur,
+                            _ => pr,
+                        });
+                        found += 1;
+
+                        if st.target_successes > 0 && found >= st.target_successes && quiet_until.is_none() {
+                            log::info!("[+] reached target of {} gateways, selecting best", st.target_successes);
+                            if !st.quiet_after_first.is_zero() {
+                                quiet_until = Some(Instant::now() + st.quiet_after_first);
+                            } else {
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            _ = tokio::time::sleep(remaining) => {
+                if best.is_some() {
+                    if quiet_until.is_some() {
+                        log::info!("[+] no new gateways recently, finalizing selection");
+                    } else {
+                        log::warn!("[-] scan deadline reached");
+                    }
+                } else {
+                    log::warn!("[-] scan deadline reached with no gateway");
+                }
+                break;
+            }
+        }
+    }
+
+    match best {
+        Some(pr) => {
+            log::info!("[+] best gateway {}:{} rtt={:?}", pr.ip, pr.port, pr.rtt);
+            Ok(pr)
+        }
+        None => Err(AetherError::NoCleanEndpoint),
+    }
+}
+
+/// `candidates` without the addresses in `avoid`, whatever their port.
+fn leave_out(candidates: Vec<(IpAddr, u16)>, avoid: &HashSet<IpAddr>) -> Vec<(IpAddr, u16)> {
+    candidates
+        .into_iter()
+        .filter(|(ip, _)| !avoid.contains(ip))
+        .collect()
+}
+
+async fn verify_one(
+    probe: &MasqueProbe,
+    ip: IpAddr,
+    port: u16,
+    timeout: Duration,
+    ironclad: bool,
+) -> Option<ProbeResult> {
+    if ironclad
+        // >>> AETHER-APP-PATCH ironclad-h2-carrier
+        && !crate::masque_h2::enabled()
+        // <<< AETHER-APP-PATCH ironclad-h2-carrier
+    {
+        let params = crate::tunnelping::MasquePingParams {
+            peer: SocketAddr::new(ip, port),
+            sni: probe.sni.clone(),
+            authority: probe.authority.clone(),
+            path: probe.path.clone(),
+            cert_pem: probe.cert_pem.to_vec(),
+            key_pem: probe.key_pem.to_vec(),
+            ech_config_list: probe.ech_config_list.as_ref().map(|a| a.to_vec()),
+            noize: probe.noize.clone(),
+            local_ipv4: probe.local_ipv4,
+            local_ipv4_str: probe.local_ipv4.to_string(),
+            local_ipv6_str: String::new(),
+        };
+        return match crate::tunnelping::masque_http_ping(&params, IRONCLAD_TCPING_TIMEOUT).await {
+            Ok(rtt) => {
+                log::info!(
+                    "[+] ironclad verified {ip}:{port} real http round trip rtt={:?}",
+                    rtt
+                );
+                Some(ProbeResult { ip, port, rtt })
+            }
+            Err(e) => {
+                log::trace!("[-] ironclad {ip}:{port} failed real http check: {e}");
+                None
+            }
+        };
+    }
+
+    if crate::masque_h2::enabled() {
+        let cfg = crate::masque_h2::H2TunnelConfig {
+            peer: SocketAddr::new(ip, port),
+            sni: probe.sni.clone(),
+            authority: probe.authority.clone(),
+            path: probe.path.clone(),
+            cert_pem: probe.cert_pem.to_vec(),
+            key_pem: probe.key_pem.to_vec(),
+            local_ipv4: probe.local_ipv4,
+            quiet: true,
+            pin_endpoint: true,
+            expected_pins: crate::consts::MASQUE_PINS
+                .iter()
+                .map(|p| p.to_vec())
+                .collect(),
+            ech_config_list: probe.ech_config_list.as_ref().map(|a| a.to_vec()),
+        };
+        return match crate::masque_h2::verify_h2(&cfg, timeout).await {
+            Ok(rtt) => Some(ProbeResult { ip, port, rtt }),
+            Err(e) => {
+                log::trace!("h2 probe {ip}:{port} -> {e}");
+                None
+            }
+        };
+    }
+
+    let vp = quic::VerifyParams {
+        peer: SocketAddr::new(ip, port),
+        sni: probe.sni.clone(),
+        authority: probe.authority.clone(),
+        path: probe.path.clone(),
+        cert_pem: probe.cert_pem.to_vec(),
+        key_pem: probe.key_pem.to_vec(),
+        ech_config_list: probe.ech_config_list.as_ref().map(|a| a.to_vec()),
+        noize: probe.noize.clone(),
+        timeout,
+        local_ipv4: probe.local_ipv4,
+    };
+
+    match quic::verify_masque(&vp).await {
+        Ok(rtt) => Some(ProbeResult { ip, port, rtt }),
+        Err(e) => {
+            log::trace!("probe {ip}:{port} -> {e}");
+            None
+        }
+    }
+}
+
+fn build_candidates(st: &Strategy, ports: &[u16], ip: IpScan, team: bool) -> Vec<(IpAddr, u16)> {
+    let primary = ports.first().copied().unwrap_or(443);
+    // >>> AETHER-APP-PATCH manual-masque-range
+    // Aether Mobile: same manual-range override as wg_prober.rs, for the
+    // MASQUE/gool scanner. Reads AETHER_MASQUE_CIDRS, else AETHER_SCAN_CIDRS.
+    // Before 1.2.6 only the WireGuard scanner honoured the app's manual range,
+    // so a pinned range was silently ignored on MASQUE and gool.
+    if ip.want_v4() {
+        if let Some(cidrs) = custom_masque_cidrs_v4() {
+            if ip.want_v6() {
+                log::warn!("[!] manual ranges are IPv4 only; ignoring IPv6 for this scan");
+            }
+            log::info!("[i] manual masque range mode: {}", cidrs.join(", "));
+            return manual_masque_candidates(st, ports, &cidrs);
+        }
+    }
+    // <<< AETHER-APP-PATCH manual-masque-range
+
+    let mut out: Vec<(IpAddr, u16)> = Vec::new();
+    let mut seen: HashSet<(IpAddr, u16)> = HashSet::new();
+
+    // Regular WARP's IPv4 scan is its gateways alone; a team's is the seeds, then the ranges.
+    let (v4_seeds, ranges) = if team {
+        (MASQUE_SEEDS, masque_cidrs_v4())
+    } else {
+        (MASQUE_GATEWAYS_V4, Vec::new())
+    };
+    // Over IPv6, regular WARP's is its gateway, then its one range; a team's, the seeds, then
+    // every range.
+    let (v6_seeds, ranges6) = if team {
+        (MASQUE_SEEDS_V6, masque_cidrs_v6())
+    } else {
+        (MASQUE_GATEWAYS_V6, MASQUE_WARP_CIDRS_V6.to_vec())
+    };
+    let seeds: Vec<Ipv4Addr> = v4_seeds.iter().filter_map(|s| s.parse().ok()).collect();
+    let seeds6: Vec<Ipv6Addr> = v6_seeds.iter().filter_map(|s| s.parse().ok()).collect();
+
+    if ip.want_v4() {
+        for a in &seeds {
+            if seen.insert((IpAddr::V4(*a), primary)) {
+                out.push((IpAddr::V4(*a), primary));
+            }
+        }
+        let cidr_hosts: Vec<Vec<Ipv4Addr>> = ranges
+            .iter()
+            .map(|c| {
+                if st.full_subnet {
+                    enumerate_cidr_v4(c)
+                } else {
+                    sample_cidr_v4(c, st.sample_per_cidr)
+                }
+            })
+            .collect();
+        let max_len = cidr_hosts.iter().map(|v| v.len()).max().unwrap_or(0);
+        for i in 0..max_len {
+            for hosts in &cidr_hosts {
+                if let Some(a) = hosts.get(i) {
+                    if seen.insert((IpAddr::V4(*a), primary)) {
+                        out.push((IpAddr::V4(*a), primary));
+                    }
+                }
+            }
+        }
+    }
+
+    if ip.want_v6() {
+        for a in &seeds6 {
+            if seen.insert((IpAddr::V6(*a), primary)) {
+                out.push((IpAddr::V6(*a), primary));
+            }
+        }
+        let per = if st.sample_per_cidr == 0 {
+            96
+        } else {
+            st.sample_per_cidr
+        };
+        let cidr6: Vec<Vec<Ipv6Addr>> = ranges6
+            .iter()
+            .map(|c| sample_cidr_v6(c, per, MASQUE_CIDRS_V4))
+            .collect();
+        let max6 = cidr6.iter().map(|v| v.len()).max().unwrap_or(0);
+        for i in 0..max6 {
+            for hosts in &cidr6 {
+                if let Some(a) = hosts.get(i) {
+                    if seen.insert((IpAddr::V6(*a), primary)) {
+                        out.push((IpAddr::V6(*a), primary));
+                    }
+                }
+            }
+        }
+    }
+
+    if ip.want_v4() {
+        for a in &seeds {
+            for &port in ports {
+                if port != primary && seen.insert((IpAddr::V4(*a), port)) {
+                    out.push((IpAddr::V4(*a), port));
+                }
+            }
+        }
+    }
+    if ip.want_v6() {
+        for a in &seeds6 {
+            for &port in ports {
+                if port != primary && seen.insert((IpAddr::V6(*a), port)) {
+                    out.push((IpAddr::V6(*a), port));
+                }
+            }
+        }
+    }
+
+    out
+}
+
+fn parse_cidr_v4(cidr: &str) -> Option<(u32, u8)> {
+    let (ip, prefix) = cidr.split_once('/')?;
+    Some((
+        u32::from(ip.parse::<Ipv4Addr>().ok()?),
+        prefix.parse().ok()?,
+    ))
+}
+
+fn enumerate_cidr_v4(cidr: &str) -> Vec<Ipv4Addr> {
+    let (base, prefix) = match parse_cidr_v4(cidr) {
+        Some(v) => v,
+        None => return Vec::new(),
+    };
+    let host_bits = 32u32.saturating_sub(prefix as u32);
+    if host_bits == 0 {
+        return vec![Ipv4Addr::from(base)];
+    }
+    if host_bits > 12 {
+        return Vec::new();
+    }
+    let size = 1u32 << host_bits;
+    (1..size.saturating_sub(1))
+        .map(|off| Ipv4Addr::from(base + off))
+        .collect()
+}
+
+fn sample_cidr_v4(cidr: &str, n: usize) -> Vec<Ipv4Addr> {
+    let (base, prefix) = match parse_cidr_v4(cidr) {
+        Some(v) => v,
+        None => return Vec::new(),
+    };
+    let host_bits = 32u32.saturating_sub(prefix as u32);
+    let size = if host_bits >= 32 {
+        u32::MAX
+    } else {
+        1u32 << host_bits
+    };
+    if size <= 2 {
+        return vec![Ipv4Addr::from(base)];
+    }
+
+    let usable = size - 2;
+    let want = (n as u32).min(usable);
+    let mut rng = rand::rng();
+    let mut chosen: HashSet<u32> = HashSet::with_capacity(want as usize);
+    let mut out = Vec::with_capacity(want as usize);
+
+    while (out.len() as u32) < want {
+        let off = 1 + rng.random_range(0..usable);
+        if chosen.insert(off) {
+            out.push(Ipv4Addr::from(base + off));
+        }
+    }
+
+    out
+}
+
+fn parse_cidr_v6(cidr: &str) -> Option<(u128, u8)> {
+    let (ip, prefix) = cidr.split_once('/')?;
+    Some((
+        u128::from(ip.parse::<Ipv6Addr>().ok()?),
+        prefix.parse().ok()?,
+    ))
+}
+
+fn sample_cidr_v6(cidr: &str, n: usize, v4_cidrs: &[&str]) -> Vec<Ipv6Addr> {
+    let (base, prefix) = match parse_cidr_v6(cidr) {
+        Some(v) => v,
+        None => return Vec::new(),
+    };
+    if 128u32.saturating_sub(prefix as u32) == 0 {
+        return vec![Ipv6Addr::from(base)];
+    }
+
+    let v4: Vec<(u32, u8)> = v4_cidrs.iter().filter_map(|c| parse_cidr_v4(c)).collect();
+    let mut rng = rand::rng();
+    let mut out = Vec::with_capacity(n);
+    for _ in 0..n {
+        let embedded = if v4.is_empty() {
+            rng.random::<u32>() as u128
+        } else {
+            let (b, p) = v4[rng.random_range(0..v4.len())];
+            let host_bits = 32u32.saturating_sub(p as u32);
+            let host = if host_bits == 0 {
+                0
+            } else {
+                rng.random::<u32>() & ((1u32 << host_bits) - 1)
+            };
+            (b | host) as u128
+        };
+        out.push(Ipv6Addr::from(base | embedded));
+    }
+    out
+}
+
+// >>> AETHER-APP-PATCH manual-masque-range
+/// App-owned manual IPv4 range parser for the MASQUE scanner:
+/// `AETHER_MASQUE_CIDRS`, else the shared `AETHER_SCAN_CIDRS`.
+fn custom_masque_cidrs_v4() -> Option<Vec<String>> {
+    let raw = std::env::var("AETHER_MASQUE_CIDRS")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| {
+            std::env::var("AETHER_SCAN_CIDRS")
+                .ok()
+                .filter(|s| !s.trim().is_empty())
+        })?;
+    let list: Vec<String> = raw
+        .split([',', ';', ' ', '\n'])
+        .filter_map(app_normalize_cidr_v4)
+        .collect();
+    if list.is_empty() {
+        None
+    } else {
+        Some(list)
+    }
+}
+
+/// Normalises one user-typed IPv4 range. Accepts `188.114.96.0/24`,
+/// `188.114.96.x` / `188.114.96.*` (read as /24) and a bare `188.114.96.7`
+/// (read as /32). Anything malformed is dropped.
+fn app_normalize_cidr_v4(raw: &str) -> Option<String> {
+    let v = raw.trim();
+    if v.is_empty() {
+        return None;
+    }
+    if let Some((ip, prefix)) = v.split_once('/') {
+        let addr = ip.trim().parse::<Ipv4Addr>().ok()?;
+        let bits: u8 = prefix.trim().parse().ok()?;
+        if bits > 32 {
+            return None;
+        }
+        return Some(format!("{addr}/{bits}"));
+    }
+    if v.ends_with(".x") || v.ends_with(".X") || v.ends_with(".*") {
+        let addr = format!("{}0", &v[..v.len() - 1]).parse::<Ipv4Addr>().ok()?;
+        return Some(format!("{addr}/24"));
+    }
+    let addr = v.parse::<Ipv4Addr>().ok()?;
+    Some(format!("{addr}/32"))
+}
+
+/// Candidate builder for manual-range mode: every user range on the primary
+/// port first (that is where a WARP edge answers), then the remaining ports.
+fn manual_masque_candidates(st: &Strategy, ports: &[u16], cidrs: &[String]) -> Vec<(IpAddr, u16)> {
+    let primary = ports.first().copied().unwrap_or(443);
+
+    let cidr_hosts: Vec<Vec<Ipv4Addr>> = cidrs
+        .iter()
+        .map(|c| {
+            if st.full_subnet {
+                enumerate_cidr_v4(c)
+            } else {
+                sample_cidr_v4(c, st.sample_per_cidr)
+            }
+        })
+        .collect();
+
+    let mut hosts: Vec<Ipv4Addr> = Vec::new();
+    let max_len = cidr_hosts.iter().map(|v| v.len()).max().unwrap_or(0);
+    for i in 0..max_len {
+        for list in &cidr_hosts {
+            if let Some(a) = list.get(i) {
+                hosts.push(*a);
+            }
+        }
+    }
+
+    let mut out: Vec<(IpAddr, u16)> = Vec::new();
+    let mut seen: HashSet<(IpAddr, u16)> = HashSet::new();
+    for a in &hosts {
+        if seen.insert((IpAddr::V4(*a), primary)) {
+            out.push((IpAddr::V4(*a), primary));
+        }
+    }
+    for a in &hosts {
+        for &port in ports {
+            if port != primary && seen.insert((IpAddr::V4(*a), port)) {
+                out.push((IpAddr::V4(*a), port));
+            }
+        }
+    }
+    out
+}
+// <<< AETHER-APP-PATCH manual-masque-range
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_gateway_left_out_is_probed_on_no_port() {
+        let left: IpAddr = "162.159.198.1".parse().unwrap();
+        let other: IpAddr = "162.159.198.2".parse().unwrap();
+        let avoid: HashSet<IpAddr> = [left].into_iter().collect();
+        assert_eq!(
+            leave_out(vec![(left, 443), (other, 443), (left, 4500)], &avoid),
+            vec![(other, 443)]
+        );
+        assert_eq!(
+            leave_out(vec![(left, 443)], &HashSet::new()),
+            vec![(left, 443)]
+        );
+    }
+
+    #[test]
+    fn the_documented_zero_trust_masque_ingress_range_is_scanned() {
+        assert!(MASQUE_CIDRS_V4.contains(&"162.159.197.0/24"));
+        assert!(MASQUE_CIDRS_V6.contains(&"2606:4700:102::/48"));
+    }
+
+    #[test]
+    fn with_a_team_the_masque_gateways_of_warp_and_warp_plus_are_scanned() {
+        // WARP's MASQUE over IPv4 and IPv6, and WARP+'s, as the WARP client's own log of 2024
+        // and Xray's notes have them: 162.159.198.0/24 with 2606:4700:103::1, and
+        // 162.159.199.0/24, beside Zero Trust's 162.159.197.0/24.
+        assert!(MASQUE_CIDRS_V4.contains(&"162.159.198.0/24"));
+        assert!(MASQUE_CIDRS_V4.contains(&"162.159.199.0/24"));
+        assert!(MASQUE_CIDRS_V6.contains(&"2606:4700:103::/48"));
+        let st = ScanMode::Thorough.strategy();
+        let v4 = build_candidates(&st, MASQUE_PORTS, IpScan::V4, true);
+        for host in 1..=254u8 {
+            let ip = IpAddr::V4(Ipv4Addr::new(162, 159, 199, host));
+            assert!(v4.contains(&(ip, 443)), "{ip}");
+        }
+        // The gateways of WARP+ and Zero Trust on every port, as WARP's.
+        for gateway in ["162.159.199.2", "162.159.197.2", "162.159.198.2"] {
+            let ip: IpAddr = gateway.parse().expect("an address");
+            for &port in MASQUE_PORTS {
+                assert!(v4.contains(&(ip, port)), "{ip}:{port}");
+            }
+        }
+        // 2606:4700:103::1 first among the IPv6 ones, and on every port; the others of its range
+        // carry an IPv4 address of the ranges in their last 32 bits, which ::1 cannot be.
+        let v6 = build_candidates(&st, MASQUE_PORTS, IpScan::V6, true);
+        let gateway: IpAddr = "2606:4700:103::1".parse().expect("an address");
+        assert_eq!(v6.first(), Some(&(gateway, 443)));
+        for &port in MASQUE_PORTS {
+            assert!(v6.contains(&(gateway, port)), "{port}");
+        }
+        assert!(v6.iter().any(|(ip, _)| match ip {
+            IpAddr::V6(address) =>
+                address.segments()[..3] == [0x2606, 0x4700, 0x103] && *ip != gateway,
+            IpAddr::V4(_) => false,
+        }));
+    }
+
+    #[test]
+    fn without_a_team_the_ipv4_scan_tries_the_masque_gateways_alone_on_every_port() {
+        // In every mode: the gateways on the first port, in their order, then each of them on the
+        // other ports, and no other IPv4 address.
+        let gateways: Vec<IpAddr> = MASQUE_GATEWAYS_V4
+            .iter()
+            .map(|gateway| gateway.parse().expect("an address"))
+            .collect();
+        let (first, others) = MASQUE_PORTS.split_first().expect("a port");
+        let mut expected: Vec<(IpAddr, u16)> = gateways.iter().map(|ip| (*ip, *first)).collect();
+        for ip in &gateways {
+            for &port in others {
+                expected.push((*ip, port));
+            }
+        }
+        for mode in [
+            ScanMode::Turbo,
+            ScanMode::Balanced,
+            ScanMode::Thorough,
+            ScanMode::Verified,
+            ScanMode::Ironclad,
+        ] {
+            let v4 = build_candidates(&mode.strategy(), MASQUE_PORTS, IpScan::V4, false);
+            assert_eq!(v4, expected, "{}", mode.label());
+        }
+    }
+
+    #[test]
+    fn the_masque_gateways_are_distinct_addresses_of_162_159_198_and_199() {
+        let mut seen = HashSet::new();
+        for gateway in MASQUE_GATEWAYS_V4 {
+            let address: Ipv4Addr = gateway.parse().expect("an address");
+            assert!(
+                matches!(address.octets(), [162, 159, 198 | 199, _]),
+                "{gateway}"
+            );
+            assert!(seen.insert(address), "{gateway} is listed twice");
+        }
+    }
+
+    #[test]
+    fn without_a_team_the_ipv6_scan_tries_warps_range_alone() {
+        // 2606:4700:103::1 first and on every port, then addresses of 2606:4700:103::/48 alone,
+        // on the first port.
+        let (first, _) = MASQUE_PORTS.split_first().expect("a port");
+        let gateway: IpAddr = "2606:4700:103::1".parse().expect("an address");
+        let st = ScanMode::Thorough.strategy();
+        let v6 = build_candidates(&st, MASQUE_PORTS, IpScan::V6, false);
+        assert_eq!(v6.first(), Some(&(gateway, *first)));
+        for &port in MASQUE_PORTS {
+            assert!(v6.contains(&(gateway, port)), "{port}");
+        }
+        assert!(
+            v6.len() > MASQUE_PORTS.len(),
+            "the range is sampled as well"
+        );
+        for (ip, port) in &v6 {
+            assert!(
+                matches!(ip, IpAddr::V6(a) if a.segments()[..3] == [0x2606, 0x4700, 0x103]),
+                "{ip}"
+            );
+            assert!(*ip == gateway || port == first, "{ip}:{port}");
+        }
+    }
+
+    #[test]
+    fn the_dns_over_https_ranges_are_swept_last_because_they_never_serve_masque() {
+        let tail = &MASQUE_CIDRS_V4[MASQUE_CIDRS_V4.len() - MASQUE_DOH_CIDRS_V4.len()..];
+        for entry in MASQUE_DOH_CIDRS_V4 {
+            assert!(tail.contains(entry), "{entry} should be at the end");
+        }
+    }
+
+    #[test]
+    fn the_documented_default_masque_port_leads_the_sweep() {
+        assert_eq!(MASQUE_PORTS.first(), Some(&443));
+    }
+
+    #[test]
+    fn the_documented_masque_fallback_ports_keep_their_documented_order() {
+        assert_eq!(MASQUE_PORTS, &[443, 500, 1701, 4500, 4443, 8443, 8095]);
+    }
+
+    #[test]
+    fn without_a_team_the_range_order_is_left_alone() {
+        std::env::remove_var("AETHER_TEAM");
+        assert_eq!(
+            prioritize(MASQUE_CIDRS_V4, MASQUE_ZT_CIDRS_V4),
+            MASQUE_CIDRS_V4.to_vec()
+        );
+    }
+
+    #[test]
+    fn prioritize_moves_the_wanted_entries_to_the_front_without_losing_any() {
+        let all = ["a", "b", "c", "d"];
+        let out = {
+            let mut out: Vec<&'static str> = vec!["c"];
+            for entry in all {
+                if !out.contains(&entry) {
+                    out.push(entry);
+                }
+            }
+            out
+        };
+        assert_eq!(out, vec!["c", "a", "b", "d"]);
+        assert_eq!(out.len(), all.len());
+    }
+
+    #[test]
+    fn the_documented_masque_fallback_ports_are_all_covered() {
+        for port in [443u16, 500, 1701, 4443, 4500, 8443, 8095] {
+            assert!(
+                MASQUE_PORTS.contains(&port),
+                "documented fallback port {port} should be scanned"
+            );
+        }
+    }
+
+    async fn quic_answers(peer: SocketAddr, timeout: Duration) -> Option<Duration> {
+        let bind = if peer.is_ipv4() {
+            "0.0.0.0:0"
+        } else {
+            "[::]:0"
+        };
+        let sock = tokio::net::UdpSocket::bind(bind).await.ok()?;
+        sock.connect(peer).await.ok()?;
+        let local = sock.local_addr().ok()?;
+
+        let mut config = quiche::Config::new(quiche::PROTOCOL_VERSION).ok()?;
+        config.set_application_protos(&[b"h3"]).ok()?;
+        config.verify_peer(false);
+        config.set_max_idle_timeout(timeout.as_millis() as u64);
+        config.set_initial_max_data(1_000_000);
+        config.set_initial_max_stream_data_bidi_local(100_000);
+        config.set_initial_max_streams_bidi(4);
+
+        let mut scid = [0u8; 16];
+        rand::rng().fill(&mut scid[..]);
+        let scid = quiche::ConnectionId::from_ref(&scid);
+
+        // The name the core's MASQUE handshakes send.
+        let sni = quic::default_sni();
+        let mut conn = quiche::connect(Some(sni), &scid, local, peer, &mut config).ok()?;
+
+        let mut out = [0u8; 1350];
+        let (written, _) = conn.send(&mut out).ok()?;
+
+        let started = Instant::now();
+        sock.send(&out[..written]).await.ok()?;
+
+        let mut buf = [0u8; 1500];
+        match tokio::time::timeout(timeout, sock.recv(&mut buf)).await {
+            Ok(Ok(read)) if read > 0 => Some(started.elapsed()),
+            _ => None,
+        }
+    }
+
+    async fn tcp_answers(peer: SocketAddr, timeout: Duration) -> Option<Duration> {
+        let started = Instant::now();
+        match tokio::time::timeout(timeout, tokio::net::TcpStream::connect(peer)).await {
+            Ok(Ok(_)) => Some(started.elapsed()),
+            _ => None,
+        }
+    }
+
+    async fn first_answer(
+        targets: &[SocketAddr],
+        timeout: Duration,
+        attempts: u32,
+        udp: bool,
+    ) -> Option<(SocketAddr, Duration)> {
+        for _ in 0..attempts {
+            let probes = targets.iter().copied().map(|peer| async move {
+                let rtt = match udp {
+                    true => quic_answers(peer, timeout).await,
+                    false => tcp_answers(peer, timeout).await,
+                };
+                (peer, rtt)
+            });
+
+            let results: Vec<(SocketAddr, Option<Duration>)> = futures::stream::iter(probes)
+                .buffer_unordered(targets.len().max(1))
+                .collect()
+                .await;
+
+            if let Some((peer, Some(rtt))) = results.into_iter().find(|(_, rtt)| rtt.is_some()) {
+                return Some((peer, rtt));
+            }
+        }
+        None
+    }
+
+    fn hosts_of(cidr: &str, tails: &[u8]) -> Vec<Ipv4Addr> {
+        let base: Ipv4Addr = cidr.split('/').next().unwrap().parse().expect("cidr base");
+        let octets = base.octets();
+        tails
+            .iter()
+            .map(|tail| Ipv4Addr::new(octets[0], octets[1], octets[2], *tail))
+            .collect()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "probes the live cloudflare edge from this network to see which masque ranges answer"]
+    async fn report_which_masque_ranges_answer_on_this_network() {
+        const TAILS: &[u8] = &[1, 2, 3];
+
+        let timeout = Duration::from_millis(
+            std::env::var("AETHER_PROBE_TIMEOUT_MS")
+                .ok()
+                .and_then(|raw| raw.trim().parse::<u64>().ok())
+                .filter(|ms| *ms > 0)
+                .unwrap_or(10_000),
+        );
+
+        let attempts = std::env::var("AETHER_PROBE_ATTEMPTS")
+            .ok()
+            .and_then(|raw| raw.trim().parse::<u32>().ok())
+            .filter(|n| *n > 0)
+            .unwrap_or(2);
+
+        let ports: Vec<u16> = match std::env::var("AETHER_PROBE_PORTS") {
+            Ok(raw) => raw
+                .split(',')
+                .filter_map(|p| p.trim().parse::<u16>().ok())
+                .collect(),
+            Err(_) => vec![443],
+        };
+        let ports = if ports.is_empty() { vec![443] } else { ports };
+
+        println!();
+        println!("probing the masque ranges from this network");
+        println!("  udp timeout {timeout:?}, {attempts} attempt(s), hosts {TAILS:?}");
+        println!("  udp ports {ports:?}");
+        println!("  override: AETHER_PROBE_TIMEOUT_MS, AETHER_PROBE_ATTEMPTS, AETHER_PROBE_PORTS");
+        println!();
+
+        let control: Vec<SocketAddr> = vec![
+            "1.1.1.1:443".parse().unwrap(),
+            "8.8.8.8:443".parse().unwrap(),
+        ];
+
+        let control_quic = first_answer(&control, timeout, attempts, true).await;
+        let control_tcp = first_answer(&control, timeout, attempts, false).await;
+
+        println!("control targets (public resolvers, not cloudflare warp edges)");
+        match control_quic {
+            Some((peer, rtt)) => println!("  quic/udp 443 works: {peer} in {}ms", rtt.as_millis()),
+            None => println!("  quic/udp 443 got no answer at all"),
+        }
+        match control_tcp {
+            Some((peer, rtt)) => println!("  tcp 443 works:      {peer} in {}ms", rtt.as_millis()),
+            None => println!("  tcp 443 got no answer at all"),
+        }
+        println!();
+
+        let mut udp_ok = Vec::new();
+        let mut tcp_only = Vec::new();
+        let mut silent = Vec::new();
+
+        for cidr in MASQUE_CIDRS_V4 {
+            let note = if MASQUE_DOCUMENTED_CIDRS_V4.contains(cidr) {
+                " [documented]"
+            } else if MASQUE_DOH_CIDRS_V4.contains(cidr) {
+                " [dns-over-https]"
+            } else {
+                ""
+            };
+
+            let hosts = hosts_of(cidr, TAILS);
+
+            let mut udp_hit: Option<(SocketAddr, Duration)> = None;
+            for port in &ports {
+                let targets: Vec<SocketAddr> = hosts
+                    .iter()
+                    .map(|ip| SocketAddr::new(IpAddr::V4(*ip), *port))
+                    .collect();
+                udp_hit = first_answer(&targets, timeout, attempts, true).await;
+                if udp_hit.is_some() {
+                    break;
+                }
+            }
+
+            let tcp_targets: Vec<SocketAddr> = hosts
+                .iter()
+                .map(|ip| SocketAddr::new(IpAddr::V4(*ip), 443))
+                .collect();
+            let tcp_hit = first_answer(&tcp_targets, timeout, attempts, false).await;
+
+            match (udp_hit, tcp_hit) {
+                (Some((peer, rtt)), _) => {
+                    println!("  UDP OK    {cidr}{note}  {peer} in {}ms", rtt.as_millis());
+                    udp_ok.push(*cidr);
+                }
+                (None, Some((peer, rtt))) => {
+                    println!(
+                        "  TCP ONLY  {cidr}{note}  {peer} in {}ms, udp stayed silent",
+                        rtt.as_millis()
+                    );
+                    tcp_only.push(*cidr);
+                }
+                (None, None) => {
+                    println!("  SILENT    {cidr}{note}");
+                    silent.push(*cidr);
+                }
+            }
+        }
+
+        println!();
+        println!("masque over quic works on ({}):", udp_ok.len());
+        for cidr in &udp_ok {
+            println!("  {cidr}");
+        }
+        println!();
+        println!("reachable over tcp only ({}):", tcp_only.len());
+        for cidr in &tcp_only {
+            println!("  {cidr}");
+        }
+        println!();
+        println!("no answer on either ({}):", silent.len());
+        for cidr in &silent {
+            println!("  {cidr}");
+        }
+
+        println!();
+        println!("verdict");
+        if !udp_ok.is_empty() {
+            println!("  put these ranges first in MASQUE_CIDRS_V4: {udp_ok:?}");
+        } else if control_quic.is_none() {
+            println!("  this network answers no quic at all, not even a public resolver,");
+            println!("  so udp 443 is blocked here rather than these ranges being blocked.");
+            println!("  reordering MASQUE_CIDRS_V4 cannot help; masque needs its http/2");
+            println!("  fallback over tcp 443 (--masque-http2) on this network.");
+        } else {
+            println!("  quic works to other hosts but every warp range stayed silent,");
+            println!("  so these ranges really are filtered here.");
+            if !tcp_only.is_empty() {
+                println!("  the tcp-only ranges above can still carry masque over http/2.");
+            }
+        }
+        println!();
+    }
+
+    #[test]
+    fn every_masque_prefix_and_seed_parses() {
+        for entry in MASQUE_CIDRS_V4 {
+            let (addr, bits) = entry.split_once('/').expect("cidr");
+            assert!(addr.parse::<Ipv4Addr>().is_ok(), "{entry}");
+            assert!(bits.parse::<u8>().is_ok(), "{entry}");
+        }
+        for entry in MASQUE_CIDRS_V6 {
+            let (addr, bits) = entry.split_once('/').expect("cidr");
+            assert!(addr.parse::<Ipv6Addr>().is_ok(), "{entry}");
+            assert!(bits.parse::<u8>().is_ok(), "{entry}");
+        }
+        for seed in MASQUE_SEEDS {
+            assert!(seed.parse::<Ipv4Addr>().is_ok(), "{seed}");
+        }
+        for seed in MASQUE_SEEDS_V6 {
+            assert!(seed.parse::<Ipv6Addr>().is_ok(), "{seed}");
+        }
+    }
+
+    #[tokio::test]
+    async fn the_ironclad_check_offers_the_ech_key_of_its_scan() {
+        let _setting = crate::upstream::hold_setting().await;
+        // The check builds its TLS with the fingerprint the options give.
+        let _options = crate::tls::hold_options().await;
+        let identity = crate::account::handshake_identity();
+        let peer = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let address = peer.local_addr().unwrap();
+        let probe = |ech: Option<Vec<u8>>| MasqueProbe {
+            sni: crate::consts::CONNECT_SNI.to_string(),
+            authority: quic::default_authority().to_string(),
+            path: quic::default_path().to_string(),
+            cert_pem: Arc::from(identity.cert_pem.clone()),
+            key_pem: Arc::from(identity.key_pem.clone()),
+            ech_config_list: ech.map(Arc::from),
+            noize: crate::noize::from_profile("off"),
+            ports: vec![address.port()],
+            ip: IpScan::V4,
+            local_ipv4: Ipv4Addr::new(172, 16, 0, 2),
+        };
+        let timeout = Duration::from_secs(5);
+
+        // Given a key BoringSSL offers nothing from (its one config is of another version), the
+        // check sends no ClientHello; the version bait may go out before it.
+        let unusable = probe(Some(vec![0, 6, 0xfe, 0x0c, 0, 2, 0, 0]));
+        let checked = verify_one(&unusable, address.ip(), address.port(), timeout, true).await;
+        assert!(checked.is_none());
+        assert!(!quic::hears_a_client_hello(&peer, Duration::from_millis(300)).await);
+
+        // Without a key, the same check does send one, with the server name in the clear.
+        let plain = probe(None);
+        let check = tokio::spawn(async move {
+            verify_one(&plain, address.ip(), address.port(), timeout, true).await
+        });
+        assert!(quic::hears_a_client_hello(&peer, Duration::from_secs(4)).await);
+        check.abort();
+    }
+}
+
+// >>> AETHER-APP-PATCH custom-tcp-scan-tests
+#[cfg(test)]
+mod custom_tcp_scan_tests {
+    use super::*;
+    #[test]
+    fn custom_tcp_budgets_cover_proxy_tls_and_data_plane() {
+        for mode in [ScanMode::Turbo, ScanMode::Balanced, ScanMode::Thorough,
+            ScanMode::Verified, ScanMode::Ironclad] {
+            let mut st = mode.strategy();
+            let deadline = st.overall_deadline;
+            tune_custom_tcp_scan(&mut st, true);
+            assert!(st.concurrency <= 4);
+            assert!(st.per_probe_timeout >= Duration::from_secs(20));
+            assert_eq!(st.overall_deadline, deadline);
+            assert!(st.early_exit_first);
+            assert_eq!(st.target_successes, 1);
+        }
+    }
+    #[tokio::test]
+    async fn ironclad_h2_sends_tcp_tls_instead_of_udp_quic() {
+        use tokio::io::AsyncReadExt;
+        let _setting = crate::upstream::hold_setting().await;
+        let _options = crate::tls::hold_options().await;
+        struct Restore(Option<String>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                match &self.0 {
+                    Some(value) => std::env::set_var("AETHER_MASQUE_HTTP2", value),
+                    None => std::env::remove_var("AETHER_MASQUE_HTTP2"),
+                }
+            }
+        }
+        let _restore = Restore(std::env::var("AETHER_MASQUE_HTTP2").ok());
+        std::env::set_var("AETHER_MASQUE_HTTP2", "1");
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let identity = crate::account::handshake_identity();
+        let probe = MasqueProbe {
+            sni: crate::consts::CONNECT_SNI.to_string(),
+            authority: quic::default_authority().to_string(), path: quic::default_path().to_string(),
+            cert_pem: Arc::from(identity.cert_pem), key_pem: Arc::from(identity.key_pem),
+            ech_config_list: None, noize: crate::noize::from_profile("off"),
+            ports: vec![address.port()], ip: IpScan::V4, local_ipv4: Ipv4Addr::new(172,16,0,2),
+        };
+        let check = tokio::spawn(async move {
+            verify_one(&probe, address.ip(), address.port(), Duration::from_secs(4), true).await
+        });
+        let (mut socket, _) = tokio::time::timeout(Duration::from_secs(3),listener.accept()).await.unwrap().unwrap();
+        let mut byte = [0u8;1];
+        tokio::time::timeout(Duration::from_secs(3),socket.read_exact(&mut byte)).await.unwrap().unwrap();
+        assert_eq!(byte[0],22, "Ironclad H2 must start a TCP TLS handshake, never QUIC");
+        check.abort();
+        let _ = check.await;
+    }
+
+    #[test]
+    fn ordinary_scans_keep_original_strategy() {
+        let mut st = ScanMode::Balanced.strategy();
+        tune_custom_tcp_scan(&mut st, false);
+        assert_eq!(st.concurrency, 16);
+        assert_eq!(st.per_probe_timeout, Duration::from_secs(6));
+        assert!(!st.early_exit_first);
+        assert_eq!(st.target_successes, 6);
+    }
+}
+// <<< AETHER-APP-PATCH custom-tcp-scan-tests
