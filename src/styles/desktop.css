@@ -1,0 +1,99 @@
+/* =============================================================================
+   تطبیق با صفحهٔ بزرگ دسکتاپ.
+   طراحی دقیقاً همان موبایل است؛ فقط ابعاد و چیدمان بازتر می‌شوند.
+   ========================================================================== */
+
+/* v9: ریل ناوبری در هر اندازهٔ پنجره دائمی است (ریشهٔ به‌هم‌ریختگی v8 تعارض
+   همین media queryهای قدیمی drawer با CSS جدید بود — همه حذف شدند).
+   فقط فاصله‌گذاری محتوا با اندازهٔ پنجره تطبیق می‌یابد. */
+@media (max-width: 1023px) {
+  .main { padding: 22px 18px 40px; }
+}
+
+/* مانیتور بزرگ — فاصله‌گذاری بازتر می‌شود، ولی دکمهٔ اتصال نه.
+   ۱.۲.۴-p1: پدینگ عمودی از 36/56 به 20/24 رسید. آن ۴۸ پیکسلِ اضافی، در پنجرهٔ
+   ۷۶۰پیکسلی، دقیقاً همان چیزی بود که انتهای کارت اتصال را زیر لبه می‌برد.
+   (`--content-max` و `--connect-button` در tokens.css تعریف می‌شوند — دو جای
+   تعریفِ یک متغیر یعنی یکی از آن‌ها بی‌صدا نادیده گرفته می‌شود.) */
+@media (min-width: 1280px) {
+  .main { padding: 20px 44px 24px; }
+}
+
+/* راست‌به‌چپ — تمام چیدمان آینه‌ای می‌شود، ولی مقادیر فنی همیشه LTR می‌مانند. */
+html[dir="rtl"] .titlebar { padding-inline-start: 0; padding-inline-end: 16px; }
+html[dir="rtl"] .kv dt { text-align: start; }
+html[dir="rtl"] .kv dd { text-align: end; }
+
+/* هر چیزی که آدرس، پورت، نسخه یا لاگ است باید چپ‌به‌راست بماند — معادل LtrInput.kt */
+.ltr {
+  direction: ltr;
+  unicode-bidi: plaintext;
+  text-align: left;
+}
+
+/* پنجرهٔ حداقلی 960×640 — هیچ عنصری نباید بریده شود.
+   دو پله‌ای: بلندیِ کمتر از ۸۰۰ پیکسل هم باید کارت را کامل جا بدهد، چون پنجرهٔ
+   پیش‌فرضِ ویندوز روی یک نمایشگر ۱۰۸۰p در همین محدوده می‌افتد. */
+@media (max-height: 800px) {
+  .main { padding-top: 14px; padding-bottom: 18px; }
+  .view--home { gap: 6px; }
+  .hero { margin-top: 0; }
+  .hero__title { font-size: 22px; }
+  .connect-wrap { margin: 2px 0 0; }
+}
+@media (max-height: 700px) {
+  /* روی `:root` و نه `.connect` — هاله یک خواهر است و متغیرِ روی خودِ دکمه به آن
+     نمی‌رسید؛ نتیجه یک هالهٔ بزرگ‌تر از دکمه بود. */
+  :root { --connect-button: 118px; }
+  .connect-wrap { margin: 0; }
+  /* ۱.۲.۴-p2: کلِ hero می‌رود، نه فقط شعار. اندازه‌گیری در هر دو زبان نشان داد
+     فارسی ۱۶–۱۹ پیکسل بلندتر از انگلیسی می‌سازد (متریکِ فونت فارسی، نه wrap)، و
+     در ۹۶۰×۶۴۰ همان مقدار کارت را بیرون می‌برد. عنوان «Aether» تنها چیزی بود که
+     می‌شد بی‌ضرر برداشت: در دسکتاپ همان نام، دو سانت بالاتر، در نوار عنوانِ خودِ
+     پنجره نوشته شده — یعنی حذفش اطلاعاتی را از کاربر نمی‌گیرد، برخلاف هر ردیفی
+     از خودِ کارت. ۳۱ پیکسل آزاد می‌کند، برای بلندترین زبان هم کافی. */
+  .hero { display: none; }
+  .main { padding-bottom: 12px; }
+
+  /* ۱.۲.۴-p2 — پلهٔ فشرده‌سازیِ خودِ کارت. اندازه‌گیریِ واقعی در کوچک‌ترین پنجرهٔ
+     مجاز (۹۶۰×۶۴۰) نشان داد کارت ۳۰ پیکسل از لبه بیرون می‌زند؛ باریک‌بودنِ کارت
+     دلیلش نبود (بعد از رفعِ `#view` کارت ۵۶۰px شد و ارتفاعش همان ۴۲۷ ماند).
+     پس در این پله ریتمِ کارت تنگ می‌شود، نه محتوایش کم: هیچ ردیفی حذف نمی‌شود،
+     چون کاربر همان اطلاعاتِ a1 را می‌خواهد ببیند. مقادیر با
+     `tests/layout-desktop.mjs` تنظیم شده‌اند و همان تست نگهبانشان است. */
+  .ccard__body { gap: 6px; padding: 10px 14px; }
+  .ccard__title { font-size: 23px; line-height: 27px; }
+  .ccard__caption { margin-top: 2px; min-height: 16px; }
+  .ccard__timer-v { font-size: 28px; }
+}
+
+/* تمرکز کیبوردی — در دسکتاپ الزامی است. */
+:focus-visible {
+  outline: 2px solid var(--aether-blue);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+/* کاربرانی که انیمیشن کمتر می‌خواهند. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+  /* Root fix for the frozen connect spinner (recurring problem 2):
+     Windows reports "reduced motion" whenever animation effects are off
+     (very common on VMs / RDP / performance mode). The blanket rule above
+     then froze the busy arc + arrows at 0deg forever. These two indicators
+     are STATE FEEDBACK, not decoration - per WCAG, essential motion may
+     stay. So they are explicitly re-enabled here. */
+  .connect.is-busy .connect__arc {
+    animation: arc-spin 1100ms linear infinite !important;
+  }
+  .connect.is-busy .connect__icon {
+    animation: icon-spin 1400ms linear infinite !important;
+  }
+  .connect__halo.is-on {
+    animation: halo-pulse 1600ms ease-in-out infinite !important;
+  }
+}

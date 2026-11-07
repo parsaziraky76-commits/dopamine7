@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en" dir="ltr" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Dopamine</title>
+  <link rel="stylesheet" href="styles/tokens.css" />
+  <link rel="stylesheet" href="styles/app.css" />
+  <link rel="stylesheet" href="styles/chat.css" />
+  <link rel="stylesheet" href="styles/mobile.css" />
+  <link rel="stylesheet" href="styles/parity.css" />
+</head>
+<body>
+  <!-- ۱.۴.۰-mobile: نوار ۲۸ پیکسلی ویندوز — فقط درگ، کمینه و بستن (decorations:false).
+       بیشینه‌سازی عمداً وجود ندارد؛ پنجره یک قاب موبایلی ۳۹۰×۸۲۰ است. -->
+  <header class="winbar" data-tauri-drag-region>
+    <span class="winbar__spacer" data-tauri-drag-region></span>
+    <button class="twin twin--min" type="button" aria-label="Minimize"></button>
+    <button class="twin twin--close" type="button" aria-label="Close"></button>
+  </header>
+
+  <!-- هدر موبایل — پورت TopAppBar نسخهٔ اندروید -->
+  <header class="mobile-header" id="mobile-header">
+    <button class="mobile-header__btn mobile-header__menu" id="menu-btn" type="button" aria-label="Menu" aria-controls="drawer" aria-expanded="false"></button>
+    <button class="mobile-header__btn mobile-header__back" id="back-btn" type="button" aria-label="Back" hidden></button>
+    <div class="mobile-header__brand">
+      <span class="mobile-header__title" id="header-title">Dopamine</span>
+      <span class="mobile-header__tagline" id="header-tagline">Freedom, in one tap</span>
+    </div>
+    <span class="mobile-header__spacer"></span>
+    <button class="mobile-header__btn mobile-header__action" id="hdr-assistant" type="button" data-tab="assistant" aria-label="Assistant"></button>
+    <button class="mobile-header__btn mobile-header__action" id="hdr-tune" type="button" data-tab="tunnel" aria-label="Tunnel settings"></button>
+  </header>
+
+  <!-- کشوی ناوبری رویی — همان Drawer موبایل -->
+  <div class="drawer__backdrop" id="drawer-backdrop" hidden></div>
+  <nav class="drawer" id="drawer" aria-label="Sections" aria-hidden="true">
+    <div class="drawer__head">
+      <div class="drawer__brand">
+        <span class="drawer__title">Dopamine</span>
+        <span class="drawer__tagline">Freedom, in one tap</span>
+      </div>
+    </div>
+    <div class="drawer__group" data-group="ai">
+      <button class="drawer__item" type="button" data-tab="assistant">Assistant</button>
+      <button class="drawer__item" type="button" data-tab="chat">Chat</button>
+    </div>
+    <div class="drawer__sep"></div>
+    <div class="drawer__group" data-group="app">
+      <button class="drawer__item" type="button" data-tab="advanced">Settings</button>
+      <button class="drawer__item" type="button" data-tab="diagnostics">Diagnostics</button>
+      <button class="drawer__item" type="button" data-tab="share">Share over LAN</button>
+      <button class="drawer__item" type="button" data-tab="about">About</button>
+    </div>
+  </nav>
+
+  <div class="shell">
+    <main class="main" id="main">
+      <div id="view"><div class="boot-skeleton" role="status" aria-busy="true">Dopamine · در حال آماده‌سازی…</div></div>
+    </main>
+  </div>
+
+  <script type="module" src="main.js"></script>
+</body>
+</html>

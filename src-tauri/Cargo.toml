@@ -1,0 +1,77 @@
+[package]
+name = "aether-desktop"
+version = "1.4.0"
+description = "Dopamine Desktop - Windows edition"
+edition = "2021"
+rust-version = "1.77"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-shell = "2"
+tauri-plugin-single-instance = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+parking_lot = "0.12"
+# Wintun — معادل ویندوزیِ VpnService + hev-tun در اندروید
+wintun = "0.5"
+# ۱.۲.۵-perf — `ipstack` و `tokio` از این‌جا برداشته شدند.
+#
+# هیچ‌یک در `src-tauri/src/` استفاده نمی‌شد: تنها اشارهٔ `ipstack` یک کامنت در
+# سرِ `tun.rs` بود («ترافیک TUN → SOCKS5») که مسیرِ دادهٔ *فعلی* نیست، و `tokio`
+# حتی یک بار هم نامش برده نشده بود. هر دو زمانِ بیلد و حجمِ باینری را می‌خوردند
+# — `tokio` با `rt-multi-thread` یک زمان‌اجرای کامل را کامپایل می‌کرد.
+#
+# اگر روزی رلهٔ فضای‌کاربرِ TUN→SOCKS5 نوشته شود، همان‌جا برمی‌گردند.
+# native-tls: دست‌دادن TLS برای جای‌یابی IP روی 443 (معادل tlsWrap موبایل). در ویندوز از SChannel بومی استفاده می‌کند.
+native-tls = "0.2"
+# NPVS v5 authenticated envelope, identical wire contract to mobile 1.6.0.
+chacha20poly1305 = "0.10"
+hkdf = "0.12"
+sha2 = "0.10"
+pbkdf2 = "0.12"
+p256 = { version = "0.13", features = ["ecdsa"] }
+zeroize = "1"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = [
+  "Win32_Foundation",
+  "Win32_NetworkManagement_IpHelper",
+  "Win32_NetworkManagement_Ndis",
+  "Win32_Networking_WinSock",
+  "Win32_System_Threading",
+  # 1.3.0 port-guard: هر فرزند در Job «با بستنِ دسته بمیر» — رجوع به procguard.rs.
+  "Win32_System_JobObjects",
+  "Win32_Security",
+  # v12: DPAPI (CryptProtectData) — انبار رازِ مهرشدهٔ کلید API.
+  "Win32_Security_Cryptography",
+  # 1.3.0 file-drop: WM_DROPFILES روی پنجرهٔ ارتقایافته — رجوع به filedrop.rs.
+  "Win32_System_Ole",
+  "Win32_System_Memory",
+  "Win32_System_Com",
+  "Win32_UI_Shell",
+  "Win32_UI_Shell_Common",
+  "Win32_UI_WindowsAndMessaging",
+] }
+
+[profile.release]
+# معادل minifyEnabled/R8 در اندروید — باینری کوچک و بدون سمبل اضافی.
+#
+# ۱.۲.۵-perf: `opt-level` از "s" به 3 آمد. "s" به کامپایلر می‌گوید حجم را بر
+# سرعت مقدم بدارد — یعنی درست برخلافِ چیزی که شکایتِ این نسخه است. آنچه در
+# عمل قربانی می‌شد، inline‌شدن و باز‌کردنِ حلقه‌ها در همان مسیرهایی است که
+# داغ‌اند: `copy_counted` در `share.rs`، پارسِ سطربه‌سطرِ لاگِ موتور، و
+# `snapshot()` که پنج بار در ثانیه صدا زده می‌شود.
+#
+# بهایش چند صد کیلوبایت باینریِ بیشتر است؛ `lto` و `codegen-units = 1` سرِ
+# جایشان می‌مانند و بخشی از آن را پس می‌گیرند.
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+incremental = false

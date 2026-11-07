@@ -1,0 +1,1090 @@
+# =============================================================================
+#  Dopamine Desktop (Windows) - fully automated build / package / release
+# -----------------------------------------------------------------------------
+#  خروجی هر اجرا:
+#    Dopamine-Setup-<ver>-x64.exe / -x86.exe     (Inno Setup + Uninstaller)
+#    Dopamine-Portable-<ver>-x64.zip / -x86.zip
+#    SHA256SUMS.txt
+#
+#  رفع ریشه‌ای خطاهای اجرای قبلی (run 30184335021):
+#    1) setup-node با `cache: npm` به package-lock.json نیاز دارد که وجود نداشت.
+#       راه‌حل ریشه‌ای: کش روی فایل قفل تکیه نمی‌کند و از `npm install`
+#       استفاده می‌شود؛ مخزن دیگر به فایل قفل دستی وابسته نیست.
+#    2) rust-cache پیش از وجود src/main.rs اجرا می‌شد و cargo metadata
+#       با "no targets specified in the manifest" می‌مرد. حالا main.rs موجود
+#       است و مرحلهٔ preflight قبل از هر کاری وجودش را تضمین می‌کند.
+#    3) sync-core.sh روی مخزن تازه با "cp: cannot stat 'native/aether'" می‌افتاد.
+#       حالا خودش پوشه را می‌سازد؛ submodule اجباری نیست.
+#    4) Node 20 منسوخ شده بود → Node 24.
+#    5) (v10, run 30245889354) Job انتشار پیش از اجرای قدم‌ها شکست می‌خورد؛
+#       تنها وابستگی آن Job یک اکشن شخص ثالث (softprops/action-gh-release@v2)
+#       بود. رفع ریشه‌ای: حذف کامل اکشن شخص ثالث و انتشار با CLI رسمی gh
+#       به‌صورت idempotent — جزئیات در کامنت Job آخر.
+#    6) (v11) موتور 1.4.0 روی سیستم کاربر با Io(code 5, Access is denied) در
+#       میلی‌ثانیهٔ اول می‌مرد و هیچ پروتکلی وصل نمی‌شد. رفع ریشه‌ای در
+#       src-tauri/src/engine.rs (اجرای موتور از پوشهٔ قابل‌نوشتن کاربر) +
+#       امکان پین‌کردن نسخهٔ هسته از طریق Run workflow در همین فایل.
+#    7) (v12) ریشه‌یابی نهایی: کرش دقیقاً بعد از مرحلهٔ جدید sysprofile هستهٔ
+#       1.4.0 رخ می‌دهد. هسته به‌روز می‌ماند؛ برنامه حالا RUST_LOG=debug و
+#       RUST_BACKTRACE=full به موتور می‌دهد تا محل دقیق خطا در لاگ ثبت شود.
+#       + پنل About از این پس نسخهٔ واقعی هستهٔ سینک‌شده را نشان می‌دهد
+#       (native/aether/CORE_VERSION) نه برچسب ثابت مخزن را.
+#    8) (v13) لاگ v12 ثابت کرد خروج هسته panic نیست و لاگر جدید 1.4.0
+#       متغیر RUST_LOG را نمی‌خواند؛ برنامه حالا برای هستهٔ >=1.4 سوییچ
+#       رسمی --log-level trace را می‌فرستد (با گارد نسخه برای هسته‌های
+#       قدیمی) تا عملیات دقیقی که Access denied می‌گیرد در لاگ ثبت شود.
+#    9) (v14) تست کنسولی کاربر: موتور در کنسول واقعی کامل وصل می‌شود و
+#       سؤال تعاملی [Y/n] می‌پرسد؛ زیر برنامه کنسول/stdin معتبر نیست.
+#       فیکس: stdin لوله‌ای معتبر + پاسخ خودکار y در engine.rs.
+#   10) (v15) ریشهٔ نهایی code 5 (تست تشخیصی روی سیستم کاربر):
+#       هستهٔ 1.4.0 با CWD=ریشهٔ پوشهٔ داده می‌میرد ولی با CWD=پوشهٔ
+#       خود موتور وصل می‌شود. فیکس: CWD/HOME/TMPDIR = پوشهٔ موتور +
+#       انتقال یک‌بارهٔ هویت (aether.toml) به آن پوشه.
+#   11) (v16) سرعت/پینگ: لاگ موتور از trace به info + فلاگ --perf high برای
+#       جبران بافرهای کوچک sysprofile هستهٔ 1.4.0؛ پینگ زندهٔ دوره‌ای؛
+#       ریست تیک‌های Diagnostics هنگام دیسکانکت.
+#   12) (v17) فارسی‌سازی: ارث‌بری فونت ایران‌سنس در دکمه‌ها/سلکت‌ها/اینپوت‌ها،
+#       ترجمهٔ گزینه‌های نویز و حالت اسکن، «اِتِر» با اعراب در صفحهٔ اصلی و
+#       نوار عنوان و درباره، و فارسی روان فهرست امکانات صفحهٔ درباره.
+#   13) (1.3.0) Job جداگانهٔ `cleanup` حذف شد: timeout-minutes نداشت و نگهبانِ
+#       سهمیه (check-workflow-order.py) Preflight را می‌شکست؛ و چون هر Job
+#       ماشینِ خودش را دارد، پاک‌سازی در آن Job هیچ اثری روی بیلد نداشت.
+#       پاک‌سازیِ هوشمند حالا گامی داخلِ خودِ Job بیلد است، پیش از cargo.
+#       + گیتِ «نسخه همه‌جا یکی است» در Preflight، و اسنپ‌شاتِ بازگشتِ هسته
+#       حالا واقعاً به Job بیلد می‌رسد.
+# =============================================================================
+name: Build Windows
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+    # یک push که فقط متن عوض می‌کند، نباید دو جابِ ویندوزی را روشن کند.
+    # دقیقهٔ ویندوز در مخزنِ خصوصی دو برابر حساب می‌شود، پس هر اجرای کامل
+    # حدودِ ۸۰ دقیقه از سهمیهٔ ۲۰۰۰ دقیقه‌ای ماه را می‌برد — یعنی ~۲۵ اجرا
+    # در ماه، و همین سهمیه بود که اجرای ۹۵۱۲۸۶۰۶۸۲۰ را نگه داشت.
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - 'LICENSE'
+      - '.gitignore'
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - 'LICENSE'
+      - '.gitignore'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  AETHER_REPO: CluvexStudio/Aether
+  # همان نسخه‌ای که مخزن اندروید به‌شکل psiphontunnel-2.0.39.aar حمل می‌کند.
+  PSIPHON_VERSION: 83aa73b9b982e7421e00117f5b0c5aceb5dda452
+  # همان تگی که `scripts/build-natives.sh` در مخزن اندروید پین می‌کند
+  # (LYREBIRD_REF)، تا ترابرِ هر دو سکو یکی باشد.
+  LYREBIRD_VERSION: lyrebird-0.6.1
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 0) PREFLIGHT - پیش‌بررسی ساختار مخزن.
+  #    این Job مخصوصاً اضافه شده تا خطایی مثل «main.rs در مخزن نیست»
+  #    در ثانیهٔ دهم با پیام فارسیِ روشن دیده شود، نه ده دقیقه بعد در
+  #    دل یک خطای مرموز cargo.
+  # ---------------------------------------------------------------------------
+  preflight:
+    name: Preflight - repository sanity check
+    runs-on: ubuntu-latest
+    # سقفِ زمان: یک جابِ گیرکرده نباید سهمیهٔ ماه را ببلعد.
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      # ۱.۳.۰ — مخزنی که ۱.۳.۰ روی ۱.۲.۵ push شده هنوز فایل‌های حذف‌شدهٔ ۱.۲.۵ را
+      # دارد (UPGRADE-1.2.x، اسکریپت‌های قدیمی، psiphon.rs، باندلِ کهنهٔ dist-web
+      # و فایل‌های غیرِ upstream در native/aether). check-core-pristine روی هر
+      # کدام «not part of upstream» می‌داد. حذفِ فایل‌های ردیابی‌شده با `git rm`
+      # است تا `git diff --quiet`ِ گامِ enforce-release-tree سالم بماند.
+      - name: Remove leftovers of 1.2.5 (not part of 1.3.0)
+        shell: bash
+        run: python3 scripts/clean-legacy-1.2.5.py --ci
+      - name: Every file the pipeline needs must exist
+        shell: bash
+        run: |
+          missing=0
+          required=(
+            "package.json"
+            "vite.config.js"
+            "src/index.html"
+            "src/main.js"
+            "src/i18n.js"
+            "src/ai.js"
+            "src/styles/tokens.css"
+            "src/styles/app.css"
+            "src/styles/chat.css"
+            "src/styles/mobile.css"
+            "src/flags.js"
+            "src/views/home.js"
+            "src/views/advanced.js"
+            "src/views/diagnostics.js"
+            "src/views/share.js"
+            "src/views/about.js"
+            "src/views/chat.js"
+            "src/views/assistant.js"
+            "src/views/settings.js"
+            "src/views/connectioncard.js"
+            "src/ui/nav.js"
+            "src/ui/glowcycle.js"
+            "tests/png-loader.mjs"
+            "tests/chat-smoke.mjs"
+            "tests/profile-sync.mjs"
+            "tests/settings-smoke.mjs"
+            "tests/assistant-smoke.mjs"
+            "tests/ui-smoke.mjs"
+            "tests/css-classes.mjs"
+            "tests/glow-direction.mjs"
+            "tests/layout-desktop.mjs"
+            "scripts/preflight-local.sh"
+            "scripts/clean-legacy-1.2.5.py"
+            "tests/custom-ping.mjs"
+            "src-tauri/src/custom/realdelay.rs"
+            "installer/Persian.isl"
+            "installer/LICENSE.rtf"
+            "installer/wizard-large.bmp"
+            "installer/wizard-small.bmp"
+            "CORE_VERSION"
+            "src-tauri/Cargo.toml"
+            "src-tauri/build.rs"
+            "src-tauri/tauri.conf.json"
+            "src-tauri/capabilities/default.json"
+            "src-tauri/icons/icon.ico"
+            "src-tauri/src/main.rs"
+            "src-tauri/src/profile.rs"
+            "src-tauri/src/engine.rs"
+            "src-tauri/src/state.rs"
+            "src-tauri/src/store.rs"
+            "src-tauri/src/tun.rs"
+            "src-tauri/src/probe.rs"
+            "src-tauri/src/smart_auto.rs"
+            "src-tauri/src/share.rs"
+            "src-tauri/src/diagnostics.rs"
+            "src-tauri/src/log.rs"
+            "installer/aether.iss"
+            "scripts/sync-core.sh"
+            "scripts/enforce-release-tree.sh"
+            "scripts/build-engine.ps1"
+            "scripts/build-psiphon.ps1"
+            "scripts/build-pt.ps1"
+            "assets/psiphon/server_entries.txt"
+            "src-tauri/src/exit_regions.rs"
+            "scripts/core-rollback.ps1"
+            "scripts/fetch-wintun.ps1"
+            "scripts/stage-payload.ps1"
+            "scripts/make-portable.ps1"
+            "scripts/smoke-test.ps1"
+            "scripts/sign.ps1"
+            "scripts/make-persian-isl.ps1"
+            ".github/release-notes.md"
+            "README.md"
+            "README.fa.md"
+            "UPGRADE-1.2.5.md"
+            "SECURITY-AUDIT.md"
+            "LICENSE"
+          )
+          for f in "${required[@]}"; do
+            if [[ ! -f "$f" ]]; then
+              echo "::error file=$f::فایل لازم در مخزن وجود ندارد: $f"
+              missing=1
+            fi
+          done
+          # هر `mod X;` در main.rs باید یک فایل واقعی داشته باشد: یا X.rs یا
+          # پوشهٔ X/mod.rs (قاعدهٔ خودِ Rust؛ ماژولِ `custom` پوشه است).
+          while read -r m; do
+            if [[ ! -f "src-tauri/src/$m.rs" && ! -f "src-tauri/src/$m/mod.rs" ]]; then
+              echo "::error::main.rs ماژول '$m' را صدا می‌زند ولی نه src-tauri/src/$m.rs هست و نه src-tauri/src/$m/mod.rs."
+              missing=1
+            fi
+          done < <(sed -n 's/^mod \([a-z_]*\);/\1/p' src-tauri/src/main.rs)
+          [[ $missing -eq 0 ]] || exit 1
+          echo "✓ ساختار مخزن کامل است."
+
+      - name: JSON files must be valid
+        run: |
+          for f in src-tauri/tauri.conf.json src-tauri/capabilities/default.json package.json; do
+            python3 -c "import json,sys; json.load(open('$f'))" || { echo "::error file=$f::JSON معتبر نیست"; exit 1; }
+          done
+          echo "✓ همهٔ فایل‌های JSON معتبرند."
+
+      # ۱.۳.۰: ارتقای نسخه فقط در package.json و Cargo.toml انجام شده بود و
+      # tauri.conf.json (که نامِ نصب‌کننده و تگِ انتشار از آن می‌آید)، اسکریپتِ
+      # نصب، مانیفست و PATCHLEVEL روی 1.2.5 مانده بودند — بیلد سبز می‌شد ولی
+      # Dopamine-Setup-1.2.5 می‌ساخت و روی انتشارِ v1.2.5 می‌نشست. این گیت همان
+      # سنجهٔ scripts/preflight-local.sh است، حالا در CI.
+      - name: Version must be identical everywhere
+        shell: bash
+        run: |
+          v_pkg=$(python3 -c "import json;print(json.load(open('package.json'))['version'])")
+          v_lock=$(python3 -c "import json;print(json.load(open('package-lock.json'))['version'])")
+          v_conf=$(python3 -c "import json;print(json.load(open('src-tauri/tauri.conf.json'))['version'])")
+          v_cargo=$(grep -m1 '^version' src-tauri/Cargo.toml | cut -d'"' -f2)
+          v_clock=$(sed -n '/^name = "aether-desktop"/{n;p;}' src-tauri/Cargo.lock | cut -d'"' -f2)
+          v_iss=$(grep -m1 'define MyAppVersion' installer/aether.iss | cut -d'"' -f2)
+          v_man=$(grep -oE 'assemblyIdentity version="[0-9.]+"' src-tauri/windows-manifest.xml | head -1 | cut -d'"' -f2)
+          v_patch=$(tr -d '\r\n' < PATCHLEVEL)
+          echo "package.json=$v_pkg package-lock=$v_lock tauri.conf=$v_conf Cargo.toml=$v_cargo Cargo.lock=$v_clock installer=$v_iss manifest=$v_man PATCHLEVEL=$v_patch"
+          bad=0
+          for pair in "package-lock.json:$v_lock" "src-tauri/tauri.conf.json:$v_conf" "src-tauri/Cargo.toml:$v_cargo" \
+                      "src-tauri/Cargo.lock:$v_clock" "installer/aether.iss:$v_iss" "PATCHLEVEL:$v_patch"; do
+            if [ "${pair#*:}" != "$v_pkg" ]; then
+              echo "::error file=${pair%%:*}::نسخه ${pair#*:} است ولی package.json می‌گوید $v_pkg"
+              bad=1
+            fi
+          done
+          if [ "$v_man" != "$v_pkg.0" ]; then
+            echo "::error file=src-tauri/windows-manifest.xml::assemblyIdentity $v_man است، باید $v_pkg.0 باشد"
+            bad=1
+          fi
+          [ $bad -eq 0 ] || exit 1
+          echo "✓ نسخه همه‌جا $v_pkg است."
+
+      - name: Core and Psiphon compatibility must stay pinned
+        run: python3 scripts/check-psiphon-core-compat.py
+
+      - name: Release-tree cleanup must stay a safe no-op on a clean checkout
+        shell: bash
+        run: |
+          bash -n scripts/enforce-release-tree.sh
+          bash scripts/enforce-release-tree.sh
+          git diff --quiet || { echo "::error::enforce-release-tree.sh changed a tracked file"; git status --short; exit 1; }
+          echo "✓ پاک‌سازی هیچ فایلِ ردیابی‌شده‌ای را لمس نمی‌کند."
+
+      # >>> AETHER-APP-FIX workflow-order-guard
+      # ران 94978476672: گام تست برای fail-fast جلو کشیده شد و هر دو جابِ
+      # بیلد با «resource path `..\dist-engine\server_entries.txt` doesn't exist»
+      # مردند. این گام همان تناقض را در چند ثانیه و پیش از روشن شدنِ
+      # رانرهای ویندوز می‌گیرد.
+      - name: Workflow step order must stay consistent
+        run: |
+          python3 -c "import yaml" 2>/dev/null || pip install --quiet --disable-pip-version-check pyyaml
+          python3 scripts/check-workflow-order.py
+      # <<< AETHER-APP-FIX workflow-order-guard
+
+      # >>> AETHER-APP-PATCH embedded-bridge-lines-usable
+      # ۱.۳.۰ — هسته دست‌نخورده است و هیچ حالتِ توری از arti داخلِ موتور
+      # استفاده نمی‌کند (همه از tor.exe رسمی می‌گذرند)، پس گاردهای متنیِ
+      # bridges.rs / tor.rs هسته برداشته شدند؛ گاردهای سمتِ برنامه می‌مانند.
+      # Tor allein muss über das offizielle tor.exe laufen, nicht über arti:
+      # der arti-Pfad blieb im Feldlog bei 15 %. Der Wächter liest nur Text,
+      # braucht also keinen Build und läuft hier vorne mit.
+      - name: Tor alone must run the official tor binary
+        run: python3 scripts/check-tor-native.py
+
+      # Run 95081207888: x64 lief durch, x86 starb am Publish-Gate, weil das
+      # Staging x86 übersprang. Beide müssen dieselbe Architekturliste kennen.
+      - name: Every built architecture must get the official tor bundle
+        run: python3 scripts/check-tor-staging.py
+
+      # Feldlog 2026-09-16 20:04: erster Versuch nach 200 ms tot, zweiter nach
+      # 100 % abgelehnt. Beide Ursachen waren Urteile im eigenen Code.
+      - name: Session verdicts from the 2026-09-16 log must stay fixed
+        run: python3 scripts/check-session-verdicts.py
+
+      - name: That guard must still catch each of the eight regressions
+        run: bash scripts/check-session-verdicts-negative.sh
+
+      - name: The native tor guard must still catch a broken wiring
+        run: bash scripts/check-tor-native-negative.sh
+      # <<< AETHER-APP-PATCH embedded-bridge-lines-usable
+
+      # >>> AETHER-APP-PATCH connection-card-and-tor-chains
+      # Feldlogs 2026-09-17: loge3 (vier Laufzeit-Paniken in den Tor-Ketten),
+      # loge4 (Kette wartet auf einen Port, den erst Stufe 2 öffnet), loge1
+      # (34 s bis Connected, davon 10,7 s allein der Leck-Test) und die
+      # Screenshots der Verbindungskarte (`SMART`, Globus, doppelter Endpoint,
+      # 397 ms als `Poor`).
+      - name: The connection card and the tor chains must stay fixed
+        run: python3 scripts/check-connection-card.py
+
+      - name: That guard must still catch each of the sixteen regressions
+        run: bash scripts/check-connection-card-negative.sh
+      # <<< AETHER-APP-PATCH connection-card-and-tor-chains
+
+      # >>> AETHER-APP-PATCH every-rs-file-must-parse
+      # 2026-09-17: beide Build-Jobs fielen beim ersten cargo-Schritt, weil ein
+      # Textpatch Doc-Kommentar und Funktionssignatur in eine Zeile geklebt
+      # hatte (`tor_native.rs`, unexpected closing delimiter). Der Preflight war
+      # grün — er arbeitet mit grep. Dieser Wächter läuft VOR cargo und braucht
+      # keine Toolchain, kostet also nichts und spart einen ganzen Build.
+      - name: Every .rs file must still parse
+        run: python3 scripts/check-rust-parses.py
+
+      - name: That guard must catch a glued line and not cry over sound code
+        run: bash scripts/check-rust-parses-negative.sh
+
+      # ۱.۳.۰ — هستهٔ native/aether باید بایت‌به‌بایت همان Aether-main 2.4.0 باشد.
+      - name: The vendored core must be the unmodified upstream 2.4.0
+        run: python3 scripts/check-core-pristine.py
+      - name: That guard must catch a patched or swapped core
+        run: bash scripts/check-core-pristine-negative.sh
+      # <<< AETHER-APP-PATCH every-rs-file-must-parse
+
+      - name: Windows manifest and installer launch checks
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          m = Path("src-tauri/windows-manifest.xml").read_text()
+          i = Path("installer/aether.iss").read_text()
+          assert 'level="requireAdministrator"' in m, "UAC manifest is not requireAdministrator"
+          assert 'Microsoft.Windows.Common-Controls' in m, "TaskDialogIndirect dependency is missing"
+          assert 'shellexec' in i.lower(), "installer must use ShellExecute for elevated EXE"
+          st = Path("src-tauri/src/state.rs").read_text()
+          pr = Path("src-tauri/src/probe.rs").read_text()
+          assert 'WATCHDOG_INTERVAL_SECS: u64 = 30' in st
+          assert 'WATCHDOG_FAILURE_THRESHOLD: u8 = 3' in st
+          assert 'pub fn watchdog_probe' in pr
+          print("✓ UAC, runtime manifest, watchdog and installer checks passed.")
+          PY
+
+      - name: Proxy Mode must not exist in the Windows edition
+        shell: bash
+        run: |
+          if grep -rniE 'proxy[_-]?mode' src src-tauri/src installer 2>/dev/null | grep -vE 'profile\.rs|\.md$'; then
+            echo "::error::Proxy Mode عمداً جزئی از نسخهٔ ویندوز نیست."
+            exit 1
+          fi
+          echo "✓ هیچ مسیر ک��ی برای Proxy Mode وجود ندارد."
+
+      # ۱.۲.۴-p2: تست‌های رابط کاربری در CI اجرا می‌شوند، نه فقط روی میز توسعه.
+      # سه ایراد ظاهریِ این نسخه (فیلد باریکِ کلید، کارتِ بریده، تگ‌های HTML که
+      # به‌صورت متن چاپ می‌شدند) هیچ‌کدام کامپایل را نمی‌شکستند — یعنی تنها چیزی
+      # که می‌توانست جلویشان را بگیرد همین گام است.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Install web dependencies
+        run: npm ci
+      - name: UI tests (jsdom)
+        run: npm test
+      # چیدمان با یک مرورگر واقعی سنجیده می‌شود: jsdom ارتفاع را اندازه
+      # نمی‌گیرد و «کارت اتصال کامل دیده می‌شود» را نمی‌توانست ثابت کند. اگر
+      # روی رانر کرومی نبود، خودِ تست با SKIP رد می‌شود و بیلد را نمی‌شکند.
+      - name: Layout test (real browser, EN + FA)
+        run: npm run test:layout
+        env:
+          CHROME: /usr/bin/google-chrome
+      - name: UI/UX 1.4.0 regressions and screenshots (a1-a7)
+        run: npm run test:uiux
+        env:
+          CHROME: /usr/bin/google-chrome
+      - name: Upload UI/UX evidence (web renderer with test IPC)
+        uses: actions/upload-artifact@v4
+        with:
+          name: Dopamine-UIUX-1.4.0-Web-QA
+          path: validation/uiux140/
+          retention-days: 1
+
+  # ---------------------------------------------------------------------------
+  # 1) همگام‌سازی هسته — معادل scripts/sync-core.sh مخزن اندروید.
+  # ---------------------------------------------------------------------------
+  sync-core:
+    name: Sync Aether core
+    needs: preflight
+    runs-on: ubuntu-latest
+    # سقفِ زمان: یک جابِ گیرکرده نباید سهمیهٔ ماه را ببلعد.
+    timeout-minutes: 20
+    outputs:
+      core_version: ${{ steps.sync.outputs.core_version }}
+      has_prev: ${{ steps.prev.outputs.has_prev }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Remove leftovers of 1.2.5 (not part of 1.3.0)
+        shell: bash
+        run: python3 scripts/clean-legacy-1.2.5.py --ci
+
+      - name: Sync core (never fails the build)
+        id: sync
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # اهرم کنترل رانش بالادست: اگر نسخهٔ جدید هسته خراب بود، از
+          # Actions → Run workflow می‌توان نسخهٔ سالم قبلی را پین کرد.
+          CORE_TARGET: ''
+          # Ship the reviewed 2.4.0 tree; never replace it with a later tag on push.
+          # Core auto-update is DISABLED: pinned to the vendored 2.4.0 tree; no dispatch input can enable it.
+          CORE_SYNC: 'off'
+        run: bash scripts/sync-core.sh
+
+      # ۱.۳.۰ — هستهٔ اِتِر از روی Aether-main 2.4.0 کامل بازنویسی شد و هیچ پچی
+      # از سمتِ برنامه در آن نیست؛ تمام سیم‌کشی در src-tauri است. این گیت
+      # تضمین می‌کند هستهٔ وندورشده (یا هستهٔ تازه‌همگام‌شده) دست‌نخورده بماند.
+      - name: Core must match upstream plus reviewed overlay
+        run: |
+          python3 scripts/clean-legacy-1.2.5.py --ci
+          python3 scripts/check-core-pristine.py
+
+      - name: Upload synced core
+        uses: actions/upload-artifact@v4
+        with:
+          name: core-src
+          path: native/aether
+          retention-days: 1
+          if-no-files-found: error
+
+      # اسنپ‌شاتِ بازگشت (native/.core-prev) فقط وقتی هسته واقعاً ارتقا یافته
+      # وجود دارد. بدون این آپلود، core-rollback.ps1 روی رانرِ بیلد هرگز
+      # اسنپ‌شاتی پیدا نمی‌کرد و مسیرِ بازگشت به‌جای نجاتِ بیلد throw می‌کرد.
+      # فقط وقتی اسنپ‌شات واقعاً هست، Job بیلد سراغِ دانلودش می‌رود. قبلاً
+      # دانلود همیشه اجرا می‌شد و در اجرای بدونِ ارتقا یک خطای قرمزِ
+      # «Artifact not found: core-prev» در لاگ می‌گذاشت که بی‌خطر بود ولی
+      # علتِ واقعیِ شکست را زیرش گم می‌کرد.
+      - name: Was a rollback snapshot taken?
+        id: prev
+        shell: bash
+        run: |
+          if [ -d native/.core-prev ] && [ -n "$(ls -A native/.core-prev 2>/dev/null)" ]; then
+            echo "has_prev=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_prev=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Upload core rollback snapshot
+        if: steps.prev.outputs.has_prev == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: core-prev
+          path: native/.core-prev
+          include-hidden-files: true
+          retention-days: 1
+          if-no-files-found: ignore
+
+  # ---------------------------------------------------------------------------
+  # 2) بیلد موتور + اپ + بسته‌بندی — دو بیلد موازی (x64 و x86) برای سرعت بیشتر:
+  #    هر معماری روی سرور جداگانهٔ خودش همزمان ساخته می‌شود.
+  # ---------------------------------------------------------------------------
+  build:
+    name: Build ${{ matrix.arch }}
+    needs: sync-core
+    runs-on: windows-latest
+    # سقفِ زمان: یک جابِ گیرکرده نباید سهمیهٔ ماه را ببلعد.
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            rust_target: x86_64-pc-windows-msvc
+            wintun_dir: bin/amd64
+            inno_arch: x64compatible
+          - arch: x86
+            rust_target: i686-pc-windows-msvc
+            wintun_dir: bin/x86
+            inno_arch: ''
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Download synced core
+        uses: actions/download-artifact@v4
+        with:
+          name: core-src
+          path: native/aether
+
+      # نبودنش عادی است (هسته ارتقا نیافته)؛ آن‌وقت مسیرِ بازگشت هم لازم نیست.
+      - name: Download core rollback snapshot (if the core was upgraded)
+        if: needs.sync-core.outputs.has_prev == 'true'
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: core-prev
+          path: native/.core-prev
+
+      # download-artifact روی پوشه می‌نویسد و چیزی پاک نمی‌کند: باقی‌ماندهٔ
+      # ۱.۲.۵ در checkout کنارِ هستهٔ همگام‌شده می‌ماند.
+      # روی ویندوز stdoutِ پایتون cp1252 است؛ اجرای ۲۰۲۶-۱۰-۱۰ با
+      # UnicodeEncodeError همین‌جا افتاد. اسکریپت حالا خودش UTF-8 می‌نویسد و
+      # خروجی‌اش ASCII است؛ PYTHONUTF8 فقط لایهٔ دوم است.
+      - name: Remove leftovers of 1.2.5 (not part of 1.3.0)
+        shell: bash
+        env:
+          PYTHONUTF8: '1'
+          PYTHONIOENCODING: utf-8
+        run: |
+          PY=$(command -v python3 || command -v python)
+          "$PY" scripts/clean-legacy-1.2.5.py --ci
+
+      - name: Resolve version
+        id: ver
+        shell: pwsh
+        run: |
+          $v = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+          if ($env:GITHUB_REF -like 'refs/tags/v*') {
+            $v = $env:GITHUB_REF -replace '^refs/tags/v',''
+          }
+          "version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          Write-Host "Building Dopamine $v (${{ matrix.arch }})"
+
+      # ---- Toolchain -------------------------------------------------------
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
+          components: clippy, rustfmt
+
+      # Build x64/x86 formerly spent tens of minutes in "Post Run
+      # Swatinem/rust-cache@v2" after all artifacts and installer checks had
+      # succeeded.  That action registers an automatic post-job target/cache
+      # pruning and save, including on failure (cache-on-failure: true).  The
+      # size of a Tauri release target makes this both costly and unpredictable.
+      # No Rust cache action here: Cargo fetches locked dependencies normally,
+      # and no post-job Rust cache upload can delay a finished installer.
+
+      # پاک‌سازیِ هوشمند (۱.۳.۰): خروجی‌های بیلدِ نسخه‌های قبلی — نصب‌کننده،
+      # payload، موتورِ قدیمی و باینریِ اپ — پیش از هر cargo/npm حذف می‌شوند؛
+      # Cargo.lock و کشِ وابستگی‌ها می‌مانند. باید داخلِ همین Job باشد: Jobها
+      # دیسکِ مشترک ندارند. جزئیات در سرِ خودِ اسکریپت.
+      - name: Clean build outputs of older releases
+        shell: bash
+        run: bash scripts/enforce-release-tree.sh
+
+      # مهم: بدون `cache: npm`. آن گزینه وجود package-lock.json را اجباری می‌کند.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Install frontend deps
+        run: npm ci --no-audit --no-fund
+
+      # باید پیش از هر دستور cargo اجرا شود (dist-web لازم است).
+      - name: Build frontend bundle
+        run: npm run web:build
+
+      # >>> AETHER-APP-FIX fmt-must-not-hide-a-parse-error
+      # مرتب‌سازیِ خودکار کد. خودِ «قالب‌بندی» هیچ‌وقت بیلد را نمی‌شکند —
+      # `cargo fmt` بدون `--check` فقط بازنویسی می‌کند. ولی اگر فایلی اصلاً
+      # parse نشود، هر گامِ cargo بعدی هم روی همان می‌افتد. پیش از
+      # این، این گام `continue-on-error: true` داشت و در اجرای ۲۰۲۶-۱۰-۰۵ همین
+      # را قورت داد:
+      #
+      #   error: expected one of `!` or `::`, found `=`
+      #     --> src-tauri\src\engine.rs:918:40
+      #
+      # بیلد ادامه پیدا کرد و همان خطا دقایقی بعد در `cargo test` (بعد از
+      # دانلود و کامپایلِ همهٔ crateها) دوباره سر درآورد. حالا همین‌جا، در
+      # یک ثانیه، با پیامِ روشن می‌ایستد.
+      - name: Auto-format Rust sources
+        working-directory: src-tauri
+        shell: bash
+        # فقط خطای parse بیلد را می‌شکند. شکایت‌های داخلیِ rustfmt (مثلِ
+        # `error[internal]: left behind trailing whitespace` روی رشته‌های بلندِ
+        # فارسی) قالب‌بندی‌اند نه نحو؛ آن‌ها مثلِ قبل فقط هشدار می‌شوند.
+        run: |
+          set +e
+          cargo fmt --all > fmt.log 2>&1
+          rc=$?
+          set -e
+          cat fmt.log
+          if [ "$rc" -ne 0 ]; then
+            if grep -qE '^error: |failed to resolve mod|cannot parse' fmt.log; then
+              echo "::error::cargo fmt could not parse a Rust source file (see the error above). This is a syntax error, not a formatting issue - fix the file; every later cargo step would fail on it too."
+              rm -f fmt.log
+              exit 1
+            fi
+            echo "::warning::cargo fmt reported formatting-only issues (exit $rc); continuing."
+          fi
+          rm -f fmt.log
+      # <<< AETHER-APP-FIX fmt-must-not-hide-a-parse-error
+
+      # >>> AETHER-APP-FIX fail-fast-before-the-expensive-builds
+      # این گام تا امروز بعد از بیلدِ موتور و Psiphon و lyrebird اجرا می‌شد.
+      # نتیجه‌اش در اجرای ۲۰۲۶-۰۹-۱۶ این بود: بیلد ۰۷:۱۱ شروع شد و یک تستِ
+      # واحدِ شکسته ۰۷:۴۵ گزارش شد — سی‌وچهار دقیقه برای خطایی که در سه دقیقه
+      # معلوم می‌شد. پس جایش همین‌جاست، پیش از هر کارِ گران.
+      #
+      # اما `cargo test` بی‌قید و شرط اینجا اجرا نمی‌شود، و دلیلش همان چیزی
+      # است که اولین تلاشِ این جابه‌جایی را در اجرای 94978476672 شکست:
+      #
+      #   resource path `..\dist-engine\server_entries.txt` doesn't exist
+      #
+      # هر دستور cargo در این کریت `build.rs` را اجرا می‌کند، و
+      # `tauri_build::build()` وجودِ تک‌تکِ مسیرهای `bundle.resources` را
+      # بررسی می‌کند. آن مسیرها زیر dist-engine هستند و تازه گام‌های موتور،
+      # Wintun و Psiphon می‌سازندشان — یعنی خودِ گام‌های گرانی که می‌خواهیم
+      # بعد از تست‌ها بیایند. کامنتِ قبلیِ همین فایل این را نوشته بود و من
+      # ندیدم.
+      #
+      # راهِ حل بدون ساختنِ فایلِ قلابی: به build.rs یک پچِ پیکربندی می‌دهیم
+      # که فهرست resource را برای همین یک گام خالی کند. تست‌ها هیچ‌یک از آن
+      # فایل‌ها را لازم ندارند (منابع فقط زمانِ bundle استفاده می‌شوند) و
+      # گامِ واقعیِ `tauri build` پایین‌تر بدون این پچ اجرا می‌شود، پس اعتبارِ
+      # منابع در نسخهٔ نهایی همان‌طور که بود بررسی می‌شود.
+      #
+      # نکته: آرایهٔ خالی لازم است، نه شیءِ خالی. ادغامِ پیکربندی برای شیء
+      # کلید‌به‌کلید است و `{}` هیچ‌چیز را حذف نمی‌کند؛ آرایه کلاً جایگزین
+      # می‌شود.
+      - name: Unit tests (engine contract parity with Android)
+        working-directory: src-tauri
+        env:
+          TAURI_CONFIG: '{"bundle":{"resources":[]}}'
+        run: cargo test --target ${{ matrix.rust_target }}
+      # <<< AETHER-APP-FIX fail-fast-before-the-expensive-builds
+
+      # ---- بیلد هستهٔ aether ------------------------------------------
+      - name: Read the app patch level
+        id: patch
+        shell: bash
+        run: |
+          level=$(tr -d '\r\n' < PATCHLEVEL)
+          if [ -z "$level" ]; then
+            echo "::error::PATCHLEVEL at the repository root is empty. It is what stamps the engine and what every field log is identified by."
+            exit 1
+          fi
+          echo "level=$level" >> "$GITHUB_OUTPUT"
+          echo "==> app patch level: $level"
+
+      - name: Build engine (aether.exe)
+        shell: pwsh
+        env:
+          # هستهٔ گیت‌شده خودش هم `PATCHLEVEL` را از ریشه پیدا می‌کند، ولی در CI
+          # مقدار را صریح می‌دهیم: بیلد از یک کپیِ دانلودشدهٔ هسته انجام می‌شود و
+          # عمقِ پوشه‌ها ثابت نیست.
+          APP_PATCHLEVEL: ${{ steps.patch.outputs.level }}
+        run: |
+          $ErrorActionPreference = 'Continue'
+          ./scripts/build-engine.ps1 -Target '${{ matrix.rust_target }}'
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::warning::Engine build failed with the freshly synced core - rolling back."
+            ./scripts/core-rollback.ps1
+            $ErrorActionPreference = 'Stop'
+            ./scripts/build-engine.ps1 -Target '${{ matrix.rust_target }}'
+          }
+
+      # موتور باید همان هستهٔ CORE_VERSION باشد — هستهٔ دست‌نخورده نسخهٔ خودش را
+      # با `--version` می‌گوید (`aether 2.4.0`).
+      - name: Engine must be the bundled core version
+        shell: pwsh
+        run: |
+          $exe = "dist-engine/aether.exe"
+          if (-not (Test-Path $exe)) {
+            Write-Host "::error::aether.exe was not found after the engine build."
+            exit 1
+          }
+          $want = (Get-Content CORE_VERSION -Raw).Trim()
+          $got = (& $exe --version 2>&1 | Out-String).Trim()
+          if ($got -ne "aether $want") {
+            Write-Host "::error::the engine reports '$got' but CORE_VERSION is $want."
+            exit 1
+          }
+          Write-Host "==> engine version OK: $got"
+
+      - name: Fetch Wintun driver
+        shell: pwsh
+        run: ./scripts/fetch-wintun.ps1 -ArchDir '${{ matrix.wintun_dir }}'
+
+      # ---- استیج ۲ زنجیره: psiphon-tunnel-core -------------------------
+      # نسخه به نسخهٔ AAR مخزن اندروید پین است، تا هر دو سکو یک کتابخانه را
+      # اجرا کنند. اگر این مرحله بشکند بیلد باید بشکند: یک نصبِ بدون استیج ۲،
+      # بک‌اند زنجیره‌ای را در زمان اجرا رد می‌کند و کاربر یک قابلیتِ نیمه
+      # می‌گیرد.
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: false
+
+      # Restore an existing version-pinned Go cache if available. The
+      # restore-only action registers NO post-job save, including when a cache
+      # misses. Keeping the former key restores caches made by older runs;
+      # missing caches simply rebuild with Go's usual module/download checks.
+      # Do not cache Go's huge go-build directory or reintroduce actions/cache@v4:
+      # an automatic post-job upload could stall again after a successful build.
+      - name: Restore existing Go cache (no post-job save)
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~\go\pkg\mod
+            ~\AppData\Local\go-build
+          key: go1.23-${{ matrix.arch }}-psiphon${{ env.PSIPHON_VERSION }}-lyrebird${{ env.LYREBIRD_VERSION }}
+          restore-keys: |
+            go1.23-${{ matrix.arch }}-
+
+      - name: Build Psiphon stage (psiphon-tunnel-core.exe)
+        shell: pwsh
+        run: ./scripts/build-psiphon.ps1 -Arch '${{ matrix.arch }}' -Version '${{ env.PSIPHON_VERSION }}'
+
+      # ---- ترابرِ افزودنیِ تور: lyrebird ---------------------------------
+      # بر خلاف استیج ۲ سایفون، این مرحله حق شکستن بیلد را ندارد و
+      # `continue-on-error` دارد — دقیقاً مثل مرحلهٔ متناظر در مخزن اندروید.
+      # دلیلش: تور بدون هیچ ترابری وصل می‌شود (مستقیم، و در حالتِ
+      # `Aether → Tor` از داخل تونل)، پس یک تغییرِ بالادست در Go نباید
+      # نصب‌کننده‌ای را که هر چیز دیگرش سالم است زمین بگذارد. خودِ اسکریپت هم
+      # با کد صفر و هشدارِ صریح بیرون می‌آید؛ `continue-on-error` فقط برای
+      # آن چیزی است که اسکریپت پیش‌بینی نکرده.
+      # تورِ رسمی: همان بسته‌ای که مرورگر تور از آن ساخته می‌شود، با دایجستِ
+      # منتشرشدهٔ خودِ Tor. مسیرِ arti در ایران روی ۱۵٪ می‌ماند (لاگِ
+      # ۱۶ سپتامبر ۲۰۲۶)؛ توضیحِ کامل در سرِ scripts/stage-tor.ps1.
+      - name: Stage the official Tor binaries
+        continue-on-error: true
+        shell: pwsh
+        run: ./scripts/stage-tor.ps1 -Arch '${{ matrix.arch }}'
+
+      # زودشکن: اگر تور تدارک نشد، بیلدی که منتشر می‌شود همین‌جا بایستد، نه
+      # بعد از ۲۰ دقیقه کامپایلِ Tauri که گیتِ پایینی تازه می‌فهمد (همان
+      # اتفاقِ ۴ اکتبر). گیتِ پایینی می‌ماند و payloadِ نهایی را می‌سنجد.
+      - name: A published build must have staged tor (fail fast)
+        if: github.event_name != 'pull_request'
+        shell: pwsh
+        run: |
+          if (-not (Test-Path 'dist-engine/tor/tor.exe')) {
+            Write-Host "::error::The 'Stage the official Tor binaries' step staged nothing (see its warning above). Stopping before the expensive builds instead of after them."
+            exit 1
+          }
+          Write-Host "==> tor staged: dist-engine/tor/tor.exe"
+
+      # >>> AETHER-APP-PATCH custom-configs-xray
+      # هستهٔ Xray v25.12.8 برای «کانفیگ‌های سفارشی»، با دایجستِ پین‌شدهٔ zip و
+      # xray.exe برای هر معماری. همان قراردادِ تور: دانلودِ ناموفق PR را
+      # نمی‌شکند، دایجستِ ناجور همیشه می‌شکند، و بیلدِ منتشرشده باید آن را داشته باشد.
+      - name: Fetch Xray core (custom configs)
+        continue-on-error: true
+        shell: pwsh
+        run: ./scripts/stage-xray.ps1 -Arch '${{ matrix.arch }}'
+
+      - name: A published build must have staged xray (fail fast)
+        if: github.event_name != 'pull_request'
+        shell: pwsh
+        run: |
+          if (-not (Test-Path 'dist-engine/xray/xray.exe')) {
+            Write-Host "::error::The 'Fetch Xray core' step staged nothing (see its warning above). Custom configs would have no core."
+            exit 1
+          }
+          Write-Host "==> xray staged: dist-engine/xray/xray.exe"
+      # <<< AETHER-APP-PATCH custom-configs-xray
+
+      - name: Build pluggable transport (lyrebird, for Tor bridges)
+        continue-on-error: true
+        shell: pwsh
+        run: ./scripts/build-pt.ps1 -Arch '${{ matrix.arch }}' -Version '${{ env.LYREBIRD_VERSION }}'
+
+      # گامِ تست‌ها اینجا بود («عمداً بعد از ساخت موتور، چون tauri.conf.json
+      # فایل‌های dist-engine را به‌عنوان resource لازم دارد»). حالا بالاتر و
+      # پیش از بیلدهای گران اجرا می‌شود، با پچِ خالی‌کردنِ resources — توضیح
+      # کامل در بلوکِ fail-fast-before-the-expensive-builds.
+      # ---- بیلد اپ -------------------------------------------------------
+      # پرچم درست رد کردن بسته‌بندی داخلی، `--no-bundle` است
+      # (مقدار قدیمی `--bundles none` در CLI جدید حذف شده).
+      - name: Build Dopamine (Tauri, release)
+        shell: pwsh
+        run: |
+          npm run tauri -- build `
+            --target ${{ matrix.rust_target }} `
+            --no-bundle `
+            --config '{"version":"${{ steps.ver.outputs.version }}"}'
+
+      # Tauri already owns the VERSION resource. Embed only the manifest after
+      # linking, otherwise winres + Tauri produce CVT1100 duplicate VERSION.
+      - name: Embed and verify requireAdministrator manifest
+        shell: pwsh
+        run: |
+          $exe = "src-tauri/target/${{ matrix.rust_target }}/release/aether-desktop.exe"
+          if (-not (Test-Path $exe)) { throw "Release executable not found: $exe" }
+          ./scripts/embed-manifest.ps1 -ExePath $exe
+
+      - name: Stage payload
+        shell: pwsh
+        run: ./scripts/stage-payload.ps1 -Target '${{ matrix.rust_target }}' -Arch '${{ matrix.arch }}'
+
+      # ---- گیتِ ترابر ---------------------------------------------------
+      # مرحلهٔ ساختِ lyrebird بالاتر `continue-on-error` دارد و همان‌جا هم
+      # می‌ماند: یک تغییرِ بالادست در Go نباید نصب‌کننده‌ای را که هر چیز دیگرش
+      # سالم است زمین بگذارد. ولی نیمهٔ دومش نبود — که چنین بیلدی **منتشر**
+      # هم نشود. همین شکاف بود که به کاربر رسید: نصبِ منتشرشده پوشهٔ
+      # `engine/pt` را داشت و داخلش هیچ ترابری نبود، و تور روی ۱۵٪ می‌ماند
+      # بی آن‌که برنامه بتواند بگوید چرا.
+      #
+      # پس: در هر بیلدی که منتشر می‌شود (هر چیزی جز PR) نبودِ ترابر خطاست.
+      # PRها همان‌طور بی ترابر رد می‌شوند، چون چیزی منتشر نمی‌کنند.
+      - name: A published build must carry the pluggable transport
+        if: github.event_name != 'pull_request'
+        shell: pwsh
+        run: |
+          $pt = "dist/payload-${{ matrix.arch }}/engine/pt/lyrebird.exe"
+          if (-not (Test-Path $pt)) {
+            Write-Host "::error::No pluggable transport in the payload ($pt). The lyrebird step above failed and this build must not be published: Tor bridges would be dead in the installer, and on a filtered network that is exactly the path users need. Check the 'Build pluggable transport' step's log."
+            exit 1
+          }
+          $size = (Get-Item $pt).Length
+          if ($size -lt 1MB) {
+            Write-Host "::error::$pt is only $size bytes - that is not a linked lyrebird binary."
+            exit 1
+          }
+          Write-Host "==> pluggable transport present: $pt ($([math]::Round($size/1MB,1)) MB)"
+
+      # همان بررسی، این بار داخلِ payloadِ آماده — عیناً کاری که اندروید داخلِ
+      # APK بسته‌شده می‌کند. یک موتورِ کهنه نباید منتشر شود.
+      # همان منطقِ گیتِ ترابر: مرحلهٔ تدارکِ تور `continue-on-error` دارد تا یک
+      # قطعیِ dist.torproject.org یک PR را زمین نزند — ولی بیلدی که منتشر
+      # می‌شود باید تور را داشته باشد، وگرنه حالتِ «تور تنها» در نصبِ منتشرشده
+      # هیچ باینریِ توری ندارد.
+      - name: A published build must carry the official tor binary
+        if: github.event_name != 'pull_request'
+        shell: pwsh
+        run: |
+          $tor = "dist/payload-${{ matrix.arch }}/engine/tor/tor.exe"
+          if (-not (Test-Path $tor)) {
+            Write-Host "::error::No tor binary in the payload ($tor). The 'Stage the official Tor binaries' step above failed and this build must not be published: the Tor path would have nothing to run. Check that step's log."
+            exit 1
+          }
+          foreach ($needed in @('lyrebird.exe','pt_config.json','geoip','geoip6')) {
+            $path = "dist/payload-${{ matrix.arch }}/engine/tor/$needed"
+            if (-not (Test-Path $path)) {
+              Write-Host "::error::$path is missing; tor cannot start without it."
+              exit 1
+            }
+          }
+          Write-Host "==> official tor present: $tor"
+
+      - name: A published build must carry the xray core
+        if: github.event_name != 'pull_request'
+        shell: pwsh
+        run: |
+          $x = "dist/payload-${{ matrix.arch }}/engine/xray/xray.exe"
+          if (-not (Test-Path $x)) {
+            Write-Host "::error::No xray core in the payload ($x). Custom configs would fail with 'core not found'."
+            exit 1
+          }
+          Write-Host "==> xray core present: $x"
+
+      - name: A published payload must carry the bundled core version
+        if: github.event_name != 'pull_request'
+        shell: pwsh
+        run: |
+          $exe = "dist/payload-${{ matrix.arch }}/engine/aether.exe"
+          if (-not (Test-Path $exe)) {
+            Write-Host "::error::No engine in the payload ($exe)."
+            exit 1
+          }
+          $want = (Get-Content CORE_VERSION -Raw).Trim()
+          $got = (& $exe --version 2>&1 | Out-String).Trim()
+          if ($got -ne "aether $want") {
+            Write-Host "::error::the staged payload ships an engine that reports '$got', not core $want."
+            exit 1
+          }
+          Write-Host "==> payload engine OK: $got"
+
+      - name: Build portable ZIP
+        shell: pwsh
+        run: ./scripts/make-portable.ps1 -Arch '${{ matrix.arch }}' -Version '${{ steps.ver.outputs.version }}'
+
+      # ---- ویزارد نصب حرفه‌ای (Inno Setup 6) --------------------------
+      - name: Ensure Inno Setup 6
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup --no-progress -y }
+          if (-not (Test-Path $iscc)) { throw "Inno Setup 6 could not be installed" }
+          "ISCC=$iscc" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      # فایل زبان فارسی از روی Default.isl رسمی خود Inno ساخته می‌شود.
+      - name: Generate the Persian wizard language file
+        shell: pwsh
+        run: ./scripts/make-persian-isl.ps1 -InnoDir (Split-Path "$env:ISCC")
+
+      - name: Build professional installer
+        shell: pwsh
+        run: |
+          & "$env:ISCC" `
+            "/DMyAppVersion=${{ steps.ver.outputs.version }}" `
+            "/DMyArch=${{ matrix.arch }}" `
+            "/DArchAllowed=${{ matrix.inno_arch }}" `
+            "/DPayloadDir=$(Resolve-Path dist/payload-${{ matrix.arch }})" `
+            "/DOutputDir=$(Resolve-Path dist)" `
+            installer/aether.iss
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed" }
+
+      # ---- امضای کد (اختیاری) --------------------------------------
+      - name: Code-sign artifacts
+        if: env.SIGN_PFX != ''
+        shell: pwsh
+        env:
+          SIGN_PFX: ${{ secrets.WINDOWS_PFX_BASE64 }}
+          SIGN_PFX_PASSWORD: ${{ secrets.WINDOWS_PFX_PASSWORD }}
+        run: ./scripts/sign.ps1 -Arch '${{ matrix.arch }}'
+
+      # تست نصب/حذف واقعی — حالا با سقف زمانی سخت‌گیرانه؛ دیگر هیچ‌وقت
+      # نمی‌تواند مثل اجرای قبلی بی‌نهایت گیر کند.
+      - name: Smoke test the installer (silent install + uninstall)
+        timeout-minutes: 10
+        shell: pwsh
+        # همان شرطی که دروازهٔ «باید tor داشته باشد» دارد: بیلدی که منتشر
+        # می‌شود، باید تور را در درختِ *نصب‌شده* هم داشته باشد — نه فقط در پی‌لود.
+        run: ./scripts/smoke-test.ps1 -Arch '${{ matrix.arch }}' -Version '${{ steps.ver.outputs.version }}' ${{ github.event_name != 'pull_request' && '-RequireTor' || '' }}
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: aether-${{ matrix.arch }}
+          path: |
+            dist/Dopamine-Setup-*.exe
+            dist/Dopamine-Portable-*.zip
+          if-no-files-found: error
+          # پیش‌فرضِ GitHub ۹۰ روز است. هر اجرا چهار فایل می‌گذارد (دو
+          # نصب‌کننده + دو زیپِ پرتابل) و سهمیهٔ فضای پلنِ Free فقط ۵۰۰
+          # مگابایت است که با Packages هم شریک است. یعنی چند اجرا بعد،
+          # فضا پر می‌شود و حساب به یک سنجهٔ پولی برمی‌خورد — و با سقفِ
+          # خرجِ صفر، جابِ بعدی که می‌خواهد runner بگیرد اجرا نمی‌شود.
+          # هفت روز برای برداشتنِ فایل کافی است؛ نسخهٔ ماندگار در Release
+          # منتشر می‌شود و فضای Actions را نمی‌خورد.
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # 3) انتشار خودکار در GitHub Releases
+  #
+  #    رفع ریشه‌ای شکست run 30245889354 («up #9»): آن اجرا در همین Job، پیش از
+  #    شروع قدم‌ها شکست خورد (به همین دلیل در آرشیو لاگ‌ها هیچ فایلی برای این
+  #    Job نبود و فقط یک annotation خطا دیده می‌شد). تنها چیزی که این Job را از
+  #    سه Job سبزِ دیگر متمایز می‌کرد، وابستگی به یک اکشن شخص ثالث
+  #    (softprops/action-gh-release@v2) بود — نسخه‌ای که روی رانتایم منسوخ Node
+  #    قفل است و مثل ماجرای upload-artifact@v3 در ۲۰۲۵، توسط خود گیت‌هاب رد
+  #    می‌شود. راه‌حل ریشه‌ای:
+  #      * حذف کامل اکشن شخص ثالث؛ انتشار با CLI رسمی گیت‌هاب (gh) که روی
+  #        runner همیشه نصب و به‌روز است و هرگز به رانتایم پین نمی‌شود.
+  #      * رقص شکنندهٔ «حذف ریلیز + ساخت با اکشن» با یک روند idempotent
+  #        (بساز، یا اگر بود همان را تازه کن + retry) جایگزین شد تا هیچ race
+  #        بین delete/create و هیچ خطای «asset already exists» باقی نماند.
+  #      * پیش از انتشار، وجود هر ۴ خروجی بیلد صریحاً بررسی می‌شود تا خطای
+  #        احتمالی، پیام روشن فارسی داشته باشد نه یک 422 مرموز.
+  #    اهداف قبلی حفظ شده‌اند: هر بیلد main یک ریلیز واقعیِ Latest با تگ
+  #    v<version> و تاریخ همان روز می‌سازد و تگ به همان کامیت بیلدشده اشاره
+  #    می‌کند تا Source code (zip/tar.gz) هم تازه بماند.
+  # ---------------------------------------------------------------------------
+  release:
+    name: Publish GitHub Release
+    needs: build
+    permissions:
+      contents: write
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    # سقفِ زمان: یک جابِ گیرکرده نباید سهمیهٔ ماه را ببلعد.
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: aether-*
+          merge-multiple: true
+          path: dist
+
+      - name: Resolve version + channel
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            V="${GITHUB_REF#refs/tags/v}"
+            TAG="${GITHUB_REF#refs/tags/}"
+          else
+            V=$(python3 -c "import json;print(json.load(open('src-tauri/tauri.conf.json'))['version'])")
+            TAG="v$V"
+          fi
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG"    >> "$GITHUB_OUTPUT"
+
+      - name: Every expected artifact must exist before publishing
+        shell: bash
+        run: |
+          set -euo pipefail
+          missing=0
+          for pat in "dist/Dopamine-Setup-*-x64.exe" "dist/Dopamine-Setup-*-x86.exe" \
+                     "dist/Dopamine-Portable-*-x64.zip" "dist/Dopamine-Portable-*-x86.zip"; do
+            if ! compgen -G "$pat" > /dev/null; then
+              echo "::error::خروجی بیلد پیدا نشد: $pat"
+              missing=1
+            fi
+          done
+          [[ $missing -eq 0 ]]
+          ls -la dist
+
+      - name: Checksums
+        working-directory: dist
+        run: sha256sum Dopamine-* | tee SHA256SUMS.txt
+
+      # Root fix for "Source code (zip) is 13 hours old": those two archives are
+      # generated from the COMMIT the tag points at, so for main builds the tag
+      # is re-pointed at the exact commit that was just built. (Skipped for
+      # manual tag pushes - there the tag is already where the user put it.)
+      - name: Point the release tag at this exact build commit
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -f "${{ steps.meta.outputs.tag }}" "$GITHUB_SHA"
+          git push origin "refs/tags/${{ steps.meta.outputs.tag }}" --force
+
+      - name: Publish (gh CLI — no third-party action)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          TITLE: Dopamine v${{ steps.meta.outputs.version }}
+        run: |
+          set -euo pipefail
+          assets=(dist/Dopamine-Setup-*.exe dist/Dopamine-Portable-*.zip dist/SHA256SUMS.txt)
+
+          # بیلدهای main: ریلیز کهنه حذف می‌شود تا ریلیز تازه تاریخ امروز را
+          # بگیرد (گیت‌هاب زمان ساختِ اولیهٔ ریلیز را نگه می‌دارد). تگ دست
+          # نمی‌خورد — قدم قبلی همین حالا آن را جابه‌جا کرده است.
+          if [[ "$GITHUB_REF" != refs/tags/* ]]; then
+            gh release delete "$TAG" --repo "$GITHUB_REPOSITORY" -y || true
+          fi
+
+          # idempotent + retry: اگر ریلیز نبود ساخته می‌شود؛ اگر بود (بیلدِ
+          # تگ، یا eventual consistency بعد از delete) همان تازه می‌شود و
+          # فایل‌ها با --clobber جایگزین می‌شوند.
+          for attempt in 1 2 3; do
+            if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+              gh release upload "$TAG" "${assets[@]}" --repo "$GITHUB_REPOSITORY" --clobber
+              gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" \
+                --title "$TITLE" --notes-file .github/release-notes.md \
+                --target "$GITHUB_SHA" --latest --draft=false --prerelease=false
+              echo "✓ release refreshed ($TAG)"
+              exit 0
+            fi
+            if gh release create "$TAG" "${assets[@]}" --repo "$GITHUB_REPOSITORY" \
+                 --title "$TITLE" --notes-file .github/release-notes.md \
+                 --target "$GITHUB_SHA" --latest; then
+              echo "✓ release created ($TAG)"
+              exit 0
+            fi
+            echo "::warning::تلاش $attempt برای انتشار ناموفق بود؛ ۵ ثانیه صبر و تلاش دوباره…"
+            sleep 5
+          done
+          # پس از سه تلاش، به‌جای یک «ناموفق ماند»ِ بی‌محتوا، هرچه برای تشخیص
+          # لازم است چاپ می‌شود: کدام فایل‌ها با چه اندازه، و پاسخِ خودِ گیت‌هاب.
+          echo "::group::چه چیزی را می‌خواستیم منتشر کنیم"
+          ls -la dist || true
+          for a in "${assets[@]}"; do
+            if [ -e "$a" ]; then echo "  ✓ $a ($(stat -c%s "$a") بایت)"; else echo "  ✗ $a وجود ندارد"; fi
+          done
+          echo "tag=$TAG  sha=$GITHUB_SHA  repo=$GITHUB_REPOSITORY"
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" || echo "(چنین ریلیزی وجود ندارد)"
+          gh api "repos/$GITHUB_REPOSITORY" --jq '.permissions' || true
+          echo "::endgroup::"
+          echo "::error::انتشار ریلیز پس از ۳ تلاش ناموفق ماند — جزئیات در گروهِ بالا."
+          exit 1

@@ -1,0 +1,279 @@
+/* =============================================================================
+   ۱.۲.۴-p4 — صفحهٔ گفت‌وگو (پورت از AiChatScreen.kt)
+
+   # چرا این صفحه تنها جایی است که ارتفاع را می‌گیرد
+
+   بقیهٔ تب‌ها یک ستونِ محتوا هستند که به بلندیِ محتوایشان رشد می‌کنند و `.main`
+   اسکرولشان می‌دهد. گفت‌وگو برعکس است: نویسنده باید همیشه پایین دیده شود و فقط
+   *لاگ* اسکرول شود. برای همین `.view--chat` کلِ ارتفاعِ `#view` را می‌گیرد
+   (`min-height: 0` روی زنجیره لازم است، وگرنه یک flex item هرگز کوچک‌تر از
+   محتوایش نمی‌شود و لاگ به‌جای اسکرول، نویسنده را از پایینِ پنجره بیرون می‌راند).
+   ============================================================================= */
+
+.view--chat {
+  gap: 12px;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.chat__head { display: flex; align-items: flex-start; gap: 12px; }
+.chat__head > :first-child { flex: 1; min-width: 0; }
+.chat__sub { margin-top: 6px; font-size: 12.5px; color: var(--text-dim, #8b97a8); }
+.chat__headacts { flex: 0 0 auto; display: flex; gap: 8px; }
+
+/* نوارِ حالتِ انتخاب. جای سرصفحه را **نمی‌گیرد** بلکه زیرش می‌نشیند: نواری که
+   عنوان را جابه‌جا کند، در هر تیک‌زدن کل صفحه را می‌پراند. */
+.chat__pickbar {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 10px;
+  border-radius: 12px;
+  background: color-mix(in srgb, #8b7cff 14%, transparent);
+  border: 1px solid color-mix(in srgb, #8b7cff 30%, transparent);
+}
+.chat__pickcount { flex: 1; min-width: 0; font-size: 12.5px; color: #b9aaff; }
+
+/* ---- لاگ ---------------------------------------------------------------- */
+
+.chat__log {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  display: flex; flex-direction: column; gap: 10px;
+  padding: 4px 2px;
+}
+
+.chat__row { display: flex; }
+.chat__row.is-user { justify-content: flex-end; }
+.chat__row.is-picked .chat__bubble {
+  outline: 1.5px solid color-mix(in srgb, #8b7cff 65%, transparent);
+  background: color-mix(in srgb, #8b7cff 18%, transparent);
+}
+
+.chat__bubble {
+  position: relative;
+  /* هرگز تمام‌عرض: حبابی که به هر دو لبه می‌رسد، دیگر نمی‌گوید چه کسی گفته. */
+  max-width: 84%;
+  padding: 10px 13px;
+  border-radius: 16px 16px 16px 5px;
+  background: color-mix(in srgb, #ffffff 6%, transparent);
+  border: 1px solid color-mix(in srgb, #ffffff 7%, transparent);
+  font-size: 13px; line-height: 1.75;
+}
+.chat__row.is-user .chat__bubble {
+  border-radius: 16px 16px 5px 16px;
+  background: color-mix(in srgb, #238BFF 20%, transparent);
+  border-color: color-mix(in srgb, #238BFF 30%, transparent);
+}
+.chat__row.is-failed .chat__bubble {
+  background: color-mix(in srgb, #ff5c7a 12%, transparent);
+  border-color: color-mix(in srgb, #ff5c7a 38%, transparent);
+}
+.chat__bubble.is-pending {
+  display: flex; align-items: center; gap: 8px;
+  background: none; border-color: transparent;
+  color: var(--text-dim, #8b97a8);
+}
+.chat__thinking { font-size: 12.5px; }
+
+/* `pre-wrap` و نه `pre`: پاسخِ مدل خطوطِ خودش را دارد و باید نگه داشته شوند، ولی
+   خطِ بلند هم باید بشکند وگرنه حباب از پنجره بیرون می‌زند. */
+.chat__text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.chat__failhead { font-weight: 600; color: #ff9db0; }
+/* متنِ خامِ گوگل: هست، ولی کوچک‌تر — جزئیات است و نه خودِ پیام. */
+.chat__faildetail {
+  margin-top: 5px;
+  font-size: 11.5px; line-height: 1.6;
+  color: color-mix(in srgb, #ff9db0 70%, #ffffff);
+  opacity: .85;
+}
+.chat__edited {
+  display: block; margin-top: 4px;
+  font-size: 10.5px; color: var(--text-dim, #8b97a8);
+}
+
+/* ---- کنش‌های هر حباب --------------------------------------------------- */
+/*
+   با opacity کم‌رنگ می‌شوند و نه با `display: none`: حبابی که با hover دکمه
+   می‌گیرد، ارتفاعش عوض می‌شود و کلِ لاگ زیرِ نشانگر می‌لرزد. جا همیشه رزرو است.
+
+   و کم‌رنگ، نه نامرئی: در موبایل این دکمه‌ها همیشه دیده می‌شوند و کاربر می‌داند
+   وجود دارند. صفرِ کاملِ opacity روی دسکتاپ یعنی «کپی» و «ویرایش» قابلیت‌هایی
+   می‌شوند که فقط با hoverِ تصادفی کشف می‌شوند.
+*/
+.chat__acts {
+  display: flex; align-items: center; gap: 4px;
+  margin-top: 6px;
+  opacity: .5;
+  transition: opacity 120ms ease;
+}
+.chat__bubble:hover .chat__acts,
+.chat__bubble:focus-within .chat__acts,
+.chat__row.is-failed .chat__acts { opacity: 1; }
+
+.chat__act {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px;
+  border: 0; border-radius: 8px;
+  background: color-mix(in srgb, #ffffff 8%, transparent);
+  color: var(--text-dim, #8b97a8);
+  cursor: pointer;
+}
+.chat__act:hover { background: color-mix(in srgb, #ffffff 14%, transparent); color: var(--text, #e6edf6); }
+.chat__act:disabled { opacity: .4; cursor: default; }
+.chat__act--accent { color: #b9aaff; background: color-mix(in srgb, #8b7cff 18%, transparent); }
+.chat__actlabel { font-size: 11.5px; color: #b9aaff; }
+
+/* ---- صفحهٔ خالی --------------------------------------------------------- */
+
+.chat__empty {
+  margin: auto 0;
+  display: flex; flex-direction: column; gap: 10px;
+  text-align: center;
+  padding: 8px 4px;
+}
+.chat__emptytitle { font-size: 16px; font-weight: 600; }
+.chat__emptybody { margin: 0; font-size: 12.5px; line-height: 1.8; color: var(--text-dim, #8b97a8); }
+.chat__chips {
+  margin-top: 6px;
+  display: flex; flex-wrap: wrap; gap: 8px; justify-content: center;
+}
+.chat__chip {
+  padding: 8px 13px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, #8b7cff 34%, transparent);
+  background: color-mix(in srgb, #8b7cff 12%, transparent);
+  color: #c3b7ff;
+  font-size: 12.5px; font-family: inherit;
+  cursor: pointer;
+}
+.chat__chip:hover { background: color-mix(in srgb, #8b7cff 22%, transparent); }
+.chat__chip:disabled { opacity: .45; cursor: default; }
+
+/* ---- نویسنده ----------------------------------------------------------- */
+
+.chat__composer {
+  flex: 0 0 auto;
+  display: flex; gap: 8px; align-items: flex-end;
+}
+/* `resize: none` چون ارتفاع را خودِ `autoGrow` می‌دهد؛ دستهٔ تغییرِ اندازهٔ مرورگر
+   روی یک ورودیِ چند‌خطی داخل یک flex row، فقط چیدمان را می‌شکند. */
+.chat__input {
+  flex: 1; min-width: 0;
+  resize: none;
+  max-height: 132px;
+  line-height: 1.6;
+  font-family: inherit;
+}
+.chat__send, .chat__stop { flex: 0 0 auto; }
+
+/* ---- دیالوگ ویرایش ----------------------------------------------------- */
+
+.chat__modal {
+  position: fixed; inset: 0; z-index: 95;
+  display: flex; align-items: center; justify-content: center;
+  padding: 24px;
+  background: color-mix(in srgb, #05080d 72%, transparent);
+}
+.chat__modalcard {
+  width: min(420px, 100%);
+  display: flex; flex-direction: column; gap: 10px;
+  padding: 16px;
+  border-radius: 16px;
+  background: var(--surface, #131a24);
+  border: 1px solid color-mix(in srgb, #ffffff 10%, transparent);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, .5);
+}
+.chat__modaltitle { font-size: 15px; font-weight: 600; }
+.chat__editor { resize: vertical; font-family: inherit; line-height: 1.7; }
+.chat__modalnote { margin: 0; font-size: 11.5px; line-height: 1.7; color: var(--text-dim, #8b97a8); }
+.chat__modalrow { display: flex; gap: 8px; justify-content: flex-end; }
+
+/* ---- کارتِ تنظیماتِ پیشنهادی ------------------------------------------- */
+/*
+   بنفشِ ‎#8b7cff‎ همان رنگی است که کلِ لایهٔ هوش مصنوعی در `app.css` با آن
+   علامت‌گذاری می‌شود (`.aihint`، `.ai__model.is-active`): کارت باید *خودش* بگوید
+   که پیشنهادِ دستیار است و نه یک بخشِ معمولی از پاسخ.
+*/
+
+.chat__changes {
+  margin-top: 10px;
+  padding: 11px 12px;
+  border-radius: 12px;
+  background: color-mix(in srgb, #8b7cff 10%, transparent);
+  border: 1px solid color-mix(in srgb, #8b7cff 32%, transparent);
+  display: flex; flex-direction: column; gap: 8px;
+}
+.chat__changestitle {
+  font-size: 12px; font-weight: 600;
+  color: #b9aaff;
+}
+.chat__change { display: flex; flex-direction: column; gap: 2px; }
+.chat__changekey {
+  font-size: 12px;
+  font-family: 'Cascadia Mono', Consolas, monospace;
+  /* `dir="ltr"` روی خودِ عنصر هم هست؛ این برای وقتی است که والد راست‌به‌چپ باشد. */
+  text-align: start;
+  color: var(--text, #F0EDFF);
+  word-break: break-word;
+}
+.chat__changewhy { font-size: 11.5px; line-height: 1.6; color: var(--text-dim, #8b97a8); }
+.chat__changenote {
+  font-size: 11px; line-height: 1.6;
+  color: var(--text-dim, #8b97a8);
+  padding-top: 2px;
+  border-top: 1px solid color-mix(in srgb, #8b7cff 18%, transparent);
+}
+.chat__changeacts { display: flex; justify-content: flex-end; }
+.chat__apply { min-width: 96px; }
+.chat__applied {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 12.5px; font-weight: 600;
+  color: #8FEAFF;
+}
+.chat__applied svg { flex: 0 0 auto; }
+
+/* ---- پایکِ حبابِ ✨ ----------------------------------------------------- */
+
+.aibubble__foot {
+  margin-top: 10px;
+  padding-top: 9px;
+  border-top: 1px solid color-mix(in srgb, #8b7cff 22%, transparent);
+}
+.aibubble__ask {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 0; border: 0; background: none;
+  color: #b9aaff;
+  font-size: 12px; font-family: inherit; text-align: start;
+  cursor: pointer;
+}
+.aibubble__ask:hover { color: #d4ccff; text-decoration: underline; }
+
+/* ۱.۴.۰-r4 — پاسخِ Markdownِ مدل (src/ui/markdown.js). فاصله‌ها با بلوک‌ها
+   ساخته می‌شوند، پس pre-wrapِ حباب اینجا خاموش است. */
+.chat__text.md { white-space: normal; }
+.md__p { margin: 0 0 .55em; }
+.md__p:last-child, .md__list:last-child, .md__pre:last-child { margin-bottom: 0; }
+.md__h { font-weight: 700; margin: .6em 0 .3em; }
+.md__h:first-child { margin-top: 0; }
+.md__list { margin: 0 0 .55em; padding-inline-start: 1.4em; }
+.md__list li { margin: .15em 0; }
+.md__li--nested { margin-inline-start: 1.2em; }
+.md__code {
+  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  font-size: .92em;
+  padding: 0 .3em;
+  border-radius: 4px;
+  background: rgba(127, 127, 127, .16);
+  unicode-bidi: isolate;
+}
+.md__pre {
+  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  font-size: .88em;
+  white-space: pre-wrap;
+  margin: 0 0 .55em;
+  padding: .5em .7em;
+  border-radius: 6px;
+  background: rgba(127, 127, 127, .14);
+  text-align: left;
+}
