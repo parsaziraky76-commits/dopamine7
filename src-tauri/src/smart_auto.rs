@@ -645,7 +645,7 @@ mod tests {
             Protocol::Masque,
         ] {
             let p = ConnectionProfile {
-                backend: TransportBackend::TorDopamine,
+                backend: TransportBackend::TorAether,
                 protocol,
                 ..Default::default()
             };
@@ -674,7 +674,7 @@ mod tests {
     #[test]
     fn the_reverse_chain_scans_turbo_and_drops_direct_path_ranges() {
         let p = ConnectionProfile {
-            backend: TransportBackend::TorDopamine,
+            backend: TransportBackend::TorAether,
             scan_mode: ScanMode::Ironclad,
             endpoint_mode: crate::profile::EndpointMode::ManualRange,
             manual_range: "188.114.97.0/24".into(),
@@ -708,7 +708,7 @@ mod tests {
         );
         let chained = build_plan(
             &ConnectionProfile {
-                backend: TransportBackend::DopamineTor,
+                backend: TransportBackend::AetherTor,
                 protocol: Protocol::Smart,
                 gool_mode: GoolMode::Modern,
                 ..Default::default()
