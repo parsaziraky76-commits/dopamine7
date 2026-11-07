@@ -2018,7 +2018,7 @@ mod tests {
         // حالت زنجیره‌ای: تور از داخل تونل می‌رود، پس هیچ پلی و هیچ تنظیم
         // bridgedb‌ای فرستاده نمی‌شود.
         let chain = ConnectionProfile {
-            backend: TransportBackend::DopamineTor,
+            backend: TransportBackend::AetherTor,
             ..base.clone()
         };
         let args = chain.to_args();
@@ -2139,7 +2139,7 @@ mod tests {
             .contains_key("AETHER_TOR_STALL_SECS"));
 
         let chained = ConnectionProfile {
-            backend: TransportBackend::DopamineTor,
+            backend: TransportBackend::AetherTor,
             ..facing.clone()
         };
         assert!(!chained
